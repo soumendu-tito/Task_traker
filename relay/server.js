@@ -1,0 +1,145 @@
+'use strict';
+
+const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+
+const PORT = Number(process.env.PORT || 8787);
+const PUBLIC_URL = String(process.env.PUBLIC_URL || '').replace(/\/$/, '');
+const ADMIN_TOKEN = process.env.RELAY_ADMIN_TOKEN || '';
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const DB_FILE = path.join(DATA_DIR, 'relay.json');
+let db;
+
+function blankDb() { return { botToken: '', botName: '', webhookSecret: '', members: [], pairs: [], offset: 0, processedUpdates: [] }; }
+function saveDb() { fs.mkdirSync(DATA_DIR, { recursive: true }); const tmp = `${DB_FILE}.tmp`; fs.writeFileSync(tmp, JSON.stringify(db, null, 2)); fs.renameSync(tmp, DB_FILE); }
+function loadDb() { try { db = { ...blankDb(), ...JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) }; } catch { db = blankDb(); } db.processedUpdates = Array.isArray(db.processedUpdates) ? db.processedUpdates : []; }
+function normalizeUsername(value) { return String(value || '').trim().replace(/^@/, '').toLowerCase(); }
+function tokenHash(value) { return crypto.createHash('sha256').update(String(value)).digest('hex'); }
+function secureEqual(a, b) { const x = Buffer.from(String(a)); const y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); }
+function json(res, status, body) { const data = JSON.stringify(body); res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(data), 'cache-control': 'no-store', 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization,content-type,x-relay-admin', 'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS' }); res.end(data); }
+async function body(req) { let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 1_000_000) throw new Error('Request body is too large.'); } return raw ? JSON.parse(raw) : {}; }
+function admin(req) { return !!ADMIN_TOKEN && secureEqual(req.headers['x-relay-admin'] || '', ADMIN_TOKEN); }
+function bearer(req) { return String(req.headers.authorization || '').replace(/^Bearer\s+/i, ''); }
+function agentFor(req) { const hash = tokenHash(bearer(req)); return db.members.find(member => member.deviceTokenHash && secureEqual(member.deviceTokenHash, hash)); }
+async function tg(method, params = {}) {
+  if (!db.botToken) throw new Error('Telegram bot is not configured on the relay.');
+  const response = await fetch(`https://api.telegram.org/bot${db.botToken}/${method}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(params) });
+  const result = await response.json(); if (!result.ok) throw new Error(result.description || 'Telegram API request failed.'); return result.result;
+}
+function publicMember(member) {
+  const { telegramId, chatId, inviteCode, deviceTokenHash, commands, ...safe } = member;
+  const deviceOnline = !!member.lastHeartbeat && Date.now() - member.lastHeartbeat < 25_000;
+  return { ...safe, status: deviceOnline ? member.status : 'offline', invitePending: !!inviteCode, deviceOnline };
+}
+function memberByTelegram(from) { return db.members.find(member => member.telegramId && String(member.telegramId) === String(from?.id)); }
+async function handleTelegramMessage(msg) {
+  if (!msg?.text || !msg.chat?.id) return;
+  const text = msg.text.trim(); const parts = text.split(/\s+/); const chatId = String(msg.chat.id);
+  const command = parts[0].toLowerCase().replace(/@[^@]+$/, '');
+  const arg = parts[1] || '';
+
+  if (command === '/start' && arg.startsWith('dm_')) {
+    const member = db.members.find(item => item.inviteCode === arg);
+    if (!member) { await tg('sendMessage', { chat_id: chatId, text: 'This workspace invite is no longer valid. Ask the workspace owner for a new one.' }); return; }
+    if (normalizeUsername(msg.from?.username) !== normalizeUsername(member.telegramUsername)) {
+      await tg('sendMessage', { chat_id: chatId, text: `This invite is for @${member.telegramUsername}. Switch to that Telegram account or ask for a new invite.` }); return;
+    }
+    member.telegramId = String(msg.from.id); member.chatId = chatId; member.inviteCode = ''; member.status = 'offline'; member.lastSeen = Date.now(); saveDb();
+    await tg('sendMessage', { chat_id: chatId, text: `Welcome, ${member.name}! Install and open Task Tracker, then pair this computer from the Telegram connection screen. Use /on, /off, /online, /offline, /task Your task, or /status.` }); return;
+  }
+
+  if (command === '/start' && arg.startsWith('dv_')) {
+    const pair = db.pairs.find(item => item.code === arg && item.expiresAt > Date.now());
+    const member = memberByTelegram(msg.from);
+    if (!pair || !member || member.id !== pair.memberId) { await tg('sendMessage', { chat_id: chatId, text: 'That computer pairing link has expired or belongs to a different Telegram account. Generate a new link in Task Tracker.' }); return; }
+    const agentToken = crypto.randomBytes(32).toString('base64url'); member.deviceTokenHash = tokenHash(agentToken); member.deviceId = pair.deviceId; member.lastHeartbeat = Date.now(); pair.agentToken = agentToken; pair.paired = true; saveDb();
+    await tg('sendMessage', { chat_id: chatId, text: 'This computer is now connected. Send /on to start its work timer and screenshot capture, or /off to stop them.' }); return;
+  }
+
+  const member = memberByTelegram(msg.from);
+  if (!member || member.chatId !== chatId) {
+    if (command === '/start' || command === 'start') await tg('sendMessage', { chat_id: chatId, text: 'Ask your workspace owner for an invite link first.' });
+    return;
+  }
+  if (command === '/on' || command === 'on' || command === '/online' || command === 'online') {
+    member.status = 'online'; member.statusSince = Date.now(); member.lastSeen = Date.now(); member.commands.push({ id: crypto.randomUUID(), action: 'start', createdAt: Date.now() }); saveDb();
+    await tg('sendMessage', { chat_id: chatId, text: member.deviceTokenHash ? 'Online command sent to your connected computer. Its timer and screenshot capture will start.' : 'You are marked online, but no computer is paired yet. Open Task Tracker on your computer and pair it first.' });
+  } else if (command === '/off' || command === 'off' || command === '/offline' || command === 'offline' || command === '/break' || command === 'break') {
+    member.status = 'offline'; member.statusSince = null; member.lastSeen = Date.now(); member.commands.push({ id: crypto.randomUUID(), action: 'stop', createdAt: Date.now() }); saveDb();
+    await tg('sendMessage', { chat_id: chatId, text: member.deviceTokenHash ? 'Off command sent to your connected computer. Its timer and screenshot capture will stop.' : 'You are marked offline. Pair Task Tracker on this computer to control its local timer.' });
+  } else if ((command === '/task' || command === 'task') && parts.length > 1) {
+    const title = text.replace(/^\/?task\s*/i, '').slice(0, 180); member.commands.push({ id: crypto.randomUUID(), action: 'task', title, createdAt: Date.now() }); saveDb();
+    await tg('sendMessage', { chat_id: chatId, text: `Task saved: ${title}` });
+  } else if (command === '/status' || command === 'status') {
+    await tg('sendMessage', { chat_id: chatId, text: `You are ${member.status}. Computer ${member.lastHeartbeat && Date.now() - member.lastHeartbeat < 25_000 ? 'connected' : 'not connected'}.` });
+  }
+}
+
+async function route(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  if (req.method === 'OPTIONS') return json(res, 204, {});
+  if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, service: 'task-tracker-relay' });
+  if (req.method === 'POST' && url.pathname.startsWith('/webhook/')) {
+    if (!db.webhookSecret || url.pathname !== `/webhook/${db.webhookSecret}` || !secureEqual(req.headers['x-telegram-bot-api-secret-token'] || '', db.webhookSecret)) return json(res, 401, { error: 'Unauthorized webhook.' });
+    const update = await body(req);
+    if (Number.isInteger(update.update_id) && db.processedUpdates.includes(update.update_id)) return json(res, 200, { ok: true, duplicate: true });
+    if (Number.isInteger(update.update_id)) { db.processedUpdates.push(update.update_id); db.processedUpdates = db.processedUpdates.slice(-500); saveDb(); }
+    await handleTelegramMessage(update.message); saveDb(); return json(res, 200, { ok: true });
+  }
+  if (url.pathname.startsWith('/admin/')) {
+    if (!admin(req)) return json(res, 401, { error: 'Invalid relay admin token.' });
+    if (req.method === 'POST' && url.pathname === '/admin/setup') {
+      if (!PUBLIC_URL) return json(res, 500, { error: 'Set PUBLIC_URL to this relay’s HTTPS address before connecting Telegram.' });
+      const input = await body(req); const botToken = String(input.botToken || '').trim(); if (!botToken) return json(res, 400, { error: 'Telegram bot token is required.' });
+      const whoResponse = await fetch(`https://api.telegram.org/bot${botToken}/getMe`); const who = await whoResponse.json(); if (!who.ok) return json(res, 400, { error: who.description || 'Invalid Telegram bot token.' });
+      db.botToken = botToken; db.botName = who.result.username; db.webhookSecret = crypto.randomBytes(24).toString('hex');
+      const webhookResponse = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: `${PUBLIC_URL}/webhook/${db.webhookSecret}`, secret_token: db.webhookSecret, allowed_updates: ['message'], drop_pending_updates: false }) });
+      const webhook = await webhookResponse.json(); if (!webhook.ok) return json(res, 502, { error: webhook.description || 'Could not configure Telegram webhook.' });
+      saveDb(); return json(res, 200, { ok: true, botName: db.botName });
+    }
+    if (req.method === 'GET' && url.pathname === '/admin/members') return json(res, 200, { members: db.members.map(publicMember) });
+    if (req.method === 'POST' && url.pathname === '/admin/members') {
+      const input = await body(req); const username = String(input.telegramUsername || '').trim().replace(/^@/, '');
+      if (!input.name || !/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(username) || !input.inviteCode) return json(res, 400, { error: 'Name, a valid Telegram username and invite code are required.' });
+      let member = db.members.find(item => item.id === input.id || normalizeUsername(item.telegramUsername) === normalizeUsername(username));
+      if (!member) { member = { id: input.id || crypto.randomUUID(), commands: [], status: 'offline', totalSeconds: 0 }; db.members.push(member); }
+      Object.assign(member, { name: String(input.name).slice(0, 100), telegramUsername: username, inviteCode: input.telegramId ? '' : input.inviteCode });
+      if (input.telegramId) { member.telegramId = String(input.telegramId); member.chatId = String(input.chatId || input.telegramId); }
+      member.commands ||= []; saveDb(); return json(res, 200, { member: publicMember(member), inviteLink: `https://t.me/${db.botName}?start=${member.inviteCode || input.inviteCode}` });
+    }
+    const remove = url.pathname.match(/^\/admin\/members\/([^/]+)$/);
+    if (req.method === 'DELETE' && remove) { db.members = db.members.filter(member => member.id !== decodeURIComponent(remove[1])); saveDb(); return json(res, 200, { ok: true }); }
+    return json(res, 404, { error: 'Unknown admin route.' });
+  }
+  if (req.method === 'POST' && url.pathname === '/agent/pair') {
+    const input = await body(req); const username = normalizeUsername(input.username); const member = db.members.find(item => normalizeUsername(item.telegramUsername) === username && item.telegramId);
+    if (!member) return json(res, 403, { error: 'Your Telegram account is not linked to this workspace yet. Open the workspace invite in Telegram first.' });
+    const code = `dv_${crypto.randomBytes(12).toString('hex')}`; const deviceId = String(input.deviceId || crypto.randomUUID());
+    db.pairs = db.pairs.filter(pair => pair.expiresAt > Date.now()); db.pairs.push({ code, memberId: member.id, deviceId, expiresAt: Date.now() + 10 * 60_000, paired: false, agentToken: '' }); saveDb();
+    return json(res, 200, { code, botName: db.botName, inviteLink: `https://t.me/${db.botName}?start=${code}` });
+  }
+  const pairStatus = url.pathname.match(/^\/agent\/pair\/(dv_[a-f0-9]+)$/);
+  if (req.method === 'GET' && pairStatus) {
+    const pair = db.pairs.find(item => item.code === pairStatus[1] && item.expiresAt > Date.now()); if (!pair) return json(res, 404, { error: 'Pairing link expired. Generate a new one.' });
+    if (!pair.paired || !pair.agentToken) return json(res, 200, { pending: true });
+    const agentToken = pair.agentToken; pair.agentToken = ''; saveDb(); return json(res, 200, { pending: false, agentToken });
+  }
+  if (req.method === 'POST' && url.pathname === '/agent/poll') {
+    const member = agentFor(req); if (!member) return json(res, 401, { error: 'This computer is not paired. Pair it again from Telegram settings.' });
+    member.lastHeartbeat = Date.now(); const commands = member.commands.splice(0, 50); saveDb(); return json(res, 200, { commands, status: member.status });
+  }
+  if (req.method === 'POST' && url.pathname === '/agent/status') {
+    const member = agentFor(req); if (!member) return json(res, 401, { error: 'This computer is not paired.' });
+    const input = await body(req); member.lastHeartbeat = Date.now(); member.deviceOnline = true;
+    if (typeof input.online === 'boolean') { member.status = input.online ? 'online' : 'offline'; member.statusSince = input.online ? (member.statusSince || Date.now()) : null; }
+    if (Number.isFinite(input.totalSeconds)) member.totalSeconds = Math.max(member.totalSeconds || 0, input.totalSeconds);
+    saveDb(); return json(res, 200, { ok: true });
+  }
+  return json(res, 404, { error: 'Not found.' });
+}
+
+loadDb();
+const server = http.createServer((req, res) => { route(req, res).catch(error => { console.error(error); if (!res.headersSent) json(res, 500, { error: error.message || 'Relay error.' }); else res.destroy(); }); });
+server.listen(PORT, '0.0.0.0', () => console.log(`Task Tracker relay listening on ${PORT}`));

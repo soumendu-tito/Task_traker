@@ -1,0 +1,24 @@
+{
+  "name": "task-tracker-desktop",
+  "version": "1.0.0",
+  "description": "A transparent desktop work tracker with Telegram controls.",
+  "main": "src/main.js",
+  "author": "Task Tracker",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "relay": "node relay/server.js",
+    "dist": "electron-builder --win nsis",
+    "pack": "electron-builder --dir"
+  },
+  "dependencies": { "nodemailer": "^6.10.1" },
+  "devDependencies": { "electron": "^35.1.5", "electron-builder": "^26.0.12" },
+  "build": {
+    "appId": "com.tasktracker.desktop",
+    "productName": "Task Tracker",
+    "directories": { "output": "release" },
+    "files": ["src/**/*", "package.json"],
+    "win": { "target": ["nsis"], "artifactName": "Task-Tracker-Setup-${version}.${ext}" },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true, "createStartMenuShortcut": true }
+  }
+}
