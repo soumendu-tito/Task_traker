@@ -25,7 +25,7 @@ function defaults() {
     tasks: [], screenshots: [], sessions: [], members: [],
     preferences: { screenshots: true, intervalMinutes: 5 },
     telegram: { token: '', chatId: '', connected: false, botName: '', offset: 0, error: '' },
-    relay: { url: '', adminKey: '', adminReady: false, username: '', agentToken: '', deviceId: '', pendingCode: '' },
+    relay: { url: '', adminKey: '', adminReady: false, username: '', agentToken: '', deviceId: '', pendingCode: '', connectionError: '' },
   };
 }
 function persist() {
@@ -85,7 +85,15 @@ async function relayRequest(route, options = {}, needsAdmin = false) {
 async function reportAgentStatus() {
   if (!state?.relay?.agentToken || !relayUrl()) return;
   try { await relayRequest('/agent/status', { method: 'POST', body: JSON.stringify({ online: state.tracking.active, totalSeconds: snapshot().tracking.activeSeconds }) }); }
-  catch (err) { console.warn('Relay status update:', err.message); }
+  catch (err) { console.warn('Relay status update:', err.message); invalidateAgentPairing(err); }
+}
+function invalidateAgentPairing(error) {
+  if (!/not paired|pairing is no longer active/i.test(String(error?.message || ''))) return false;
+  state.relay.agentToken = ''; state.telegram.connected = false;
+  state.relay.connectionError = 'This computer’s saved pairing was rejected by the relay. Generate a fresh computer link and confirm it in Telegram.';
+  persist(); publish();
+  if (telegramTimer) { clearInterval(telegramTimer); telegramTimer = null; }
+  return true;
 }
 async function pollAgentRelay() {
   if (relayBusy || !state?.relay?.agentToken || !relayUrl()) return;
@@ -103,7 +111,8 @@ async function pollAgentRelay() {
       } catch (error) { console.error(`Could not apply Telegram command ${command.id}:`, error.message); }
     }
     if (completed.length) await relayRequest('/agent/ack', { method: 'POST', body: JSON.stringify({ commandIds: completed }) });
-  } catch (err) { if (err.message !== 'fetch failed') console.warn('Relay agent polling:', err.message); }
+    if (state.relay.connectionError) { state.relay.connectionError = ''; persist(); publish(); }
+  } catch (err) { if (err.message !== 'fetch failed') console.warn('Relay agent polling:', err.message); invalidateAgentPairing(err); }
   finally { relayBusy = false; }
 }
 function startAgentRelay() { if (telegramTimer) clearInterval(telegramTimer); telegramTimer = setInterval(pollAgentRelay, 2500); pollAgentRelay(); }
@@ -433,7 +442,7 @@ ipcMain.handle('relay:pair-device', async (_e, input) => {
   if (input?.url || input?.username) { const url = String(input.url || state.relay.url).trim().replace(/\/$/, ''); const username = String(input.username || state.relay.username).trim().replace(/^@/, ''); if (!/^https:\/\//i.test(url)) throw new Error('The relay address must start with https://.'); state.relay.url = url; state.relay.username = username; }
   if (!/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(state.relay.username)) throw new Error('Enter a valid Telegram username.');
   const result = await relayRequest('/agent/pair', { method: 'POST', body: JSON.stringify({ username: state.relay.username, deviceId: state.relay.deviceId }) });
-  state.relay.pendingCode = result.code; state.telegram.botName = result.botName; persist(); publish();
+  state.relay.agentToken = ''; state.relay.pendingCode = result.code; state.relay.connectionError = ''; state.telegram.connected = false; state.telegram.botName = result.botName; persist(); publish();
   if (relayPairTimer) clearInterval(relayPairTimer); relayPairTimer = setInterval(checkRelayPair, 2500); checkRelayPair();
   return result;
 });
@@ -441,7 +450,7 @@ async function checkRelayPair() {
   if (!state.relay.pendingCode || state.relay.agentToken) { if (relayPairTimer) clearInterval(relayPairTimer); relayPairTimer = null; return; }
   try {
     const result = await relayRequest(`/agent/pair/${encodeURIComponent(state.relay.pendingCode)}`);
-    if (!result.pending && result.agentToken) { state.relay.agentToken = result.agentToken; state.relay.pendingCode = ''; state.telegram.connected = true; persist(); publish(); if (relayPairTimer) clearInterval(relayPairTimer); relayPairTimer = null; startAgentRelay(); }
+    if (!result.pending && result.agentToken) { state.relay.agentToken = result.agentToken; state.relay.pendingCode = ''; state.relay.connectionError = ''; state.telegram.connected = true; persist(); publish(); if (relayPairTimer) clearInterval(relayPairTimer); relayPairTimer = null; startAgentRelay(); }
   } catch (err) { if (err.message.includes('expired')) { state.relay.pendingCode = ''; persist(); publish(); if (relayPairTimer) clearInterval(relayPairTimer); relayPairTimer = null; } }
 }
 ipcMain.handle('assistant:ask', (_e, question) => {

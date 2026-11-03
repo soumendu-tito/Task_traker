@@ -193,7 +193,7 @@ async function route(req, res) {
     return json(res, 200, { pending: false, agentToken: pair.agentToken });
   }
   if (req.method === 'POST' && url.pathname === '/agent/poll') {
-    const member = agentFor(req); if (!member) return json(res, 401, { error: 'This computer is not paired. Pair it again from Telegram settings.' });
+    const member = agentFor(req); if (!member) return json(res, 401, { error: 'This computer pairing is no longer active. Generate a fresh computer link; a newer pairing may have replaced it.' });
     member.lastHeartbeat = Date.now(); member.commands ||= []; const commands = member.commands.slice(0, 50); saveDb(); return json(res, 200, { commands, status: member.status });
   }
   if (req.method === 'POST' && url.pathname === '/agent/ack') {

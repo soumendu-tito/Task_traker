@@ -5,6 +5,7 @@ let currentFilter = 'All';
 let toastTimer;
 let workspaceStatusKey = '';
 let workspaceRefreshing = false;
+let relayConnectionErrorShown = false;
 
 function ensureCaptureUi() {
   const captureToggle = $('#screenshots-toggle');
@@ -197,6 +198,8 @@ function render(state) {
   if (!$('#relay-url').value && state.relay?.url) $('#relay-url').value = state.relay.url;
   if (!$('#relay-username').value && state.relay?.username) $('#relay-username').value = `@${state.relay.username}`;
   $('#relay-device-status').textContent = state.relay?.agentToken ? 'This computer is paired' : state.relay?.pendingCode ? 'Waiting for Telegram confirmation…' : 'Not paired';
+  if (state.relay?.connectionError) { $('#relay-message').classList.add('error'); $('#relay-message').textContent = state.relay.connectionError; relayConnectionErrorShown = true; }
+  else if (relayConnectionErrorShown) { $('#relay-message').classList.remove('error'); $('#relay-message').textContent = ''; relayConnectionErrorShown = false; }
   if (workspaceChanged && $('#view-workspace')?.classList.contains('active')) renderWorkspace();
   const captureError = state.preferences.captureError || '';
   if ($('#capture-error')) $('#capture-error').textContent = captureError;
