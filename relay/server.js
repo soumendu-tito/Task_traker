@@ -150,9 +150,11 @@ async function route(req, res) {
       if (!input.name || !/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(username) || !input.inviteCode) return json(res, 400, { error: 'Name, a valid Telegram username and invite code are required.' });
       let member = db.members.find(item => item.id === input.id || normalizeUsername(item.telegramUsername) === normalizeUsername(username));
       if (!member) { member = { id: input.id || crypto.randomUUID(), commands: [], status: 'offline', totalSeconds: 0 }; db.members.push(member); }
-      Object.assign(member, { name: String(input.name).slice(0, 100), telegramUsername: username, inviteCode: input.telegramId ? '' : input.inviteCode });
-      if (input.telegramId) { member.telegramId = String(input.telegramId); member.chatId = String(input.chatId || input.telegramId); }
-      member.commands ||= []; saveDb(); return json(res, 200, { member: publicMember(member), inviteLink: `https://t.me/${db.botName}?start=${member.inviteCode || input.inviteCode}` });
+      Object.assign(member, { name: String(input.name).slice(0, 100), telegramUsername: username });
+      if (input.telegramId) { member.telegramId = String(input.telegramId); member.chatId = String(input.chatId || input.telegramId); member.inviteCode = ''; }
+      else if (!member.telegramId) member.inviteCode = input.inviteCode;
+      else member.inviteCode = '';
+      member.commands ||= []; saveDb(); return json(res, 200, { member: publicMember(member), inviteLink: member.inviteCode ? `https://t.me/${db.botName}?start=${member.inviteCode}` : '' });
     }
     const remove = url.pathname.match(/^\/admin\/members\/([^/]+)$/);
     if (req.method === 'DELETE' && remove) { db.members = db.members.filter(member => member.id !== decodeURIComponent(remove[1])); saveDb(); return json(res, 200, { ok: true }); }

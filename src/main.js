@@ -301,9 +301,23 @@ ipcMain.handle('workspace:list', async () => {
 });
 ipcMain.handle('workspace:add-member', async (_e, data) => {
   if (!state.relay.adminReady) throw new Error('Only the workspace administrator can add people.');
-  const member = addWorkspaceMember(data.name, data.telegramUsername);
-  if (relayUrl() && state.relay.adminKey) await relayRequest('/admin/members', { method: 'POST', body: JSON.stringify({ id: member.id, name: member.name, telegramUsername: member.telegramUsername, telegramId: state.members.find(item => item.id === member.id)?.telegramId, chatId: state.members.find(item => item.id === member.id)?.chatId, inviteCode: member.inviteCode }) }, true);
-  return member;
+  const username = String(data.telegramUsername || '').trim().replace(/^@/, '').slice(0, 32);
+  let member = state.members.find(item => normalizeTelegramUsername(item.telegramUsername) === normalizeTelegramUsername(username));
+  if (!member) member = addWorkspaceMember(data.name, username);
+  else {
+    if (!String(data.name || '').trim()) throw new Error('Enter a name for this person.');
+    member.name = String(data.name).trim().slice(0, 100);
+    if (!member.telegramId && !member.inviteCode) member.inviteCode = `dm_${crypto.randomBytes(5).toString('hex')}`;
+    persist(); publish();
+  }
+  if (relayUrl() && state.relay.adminKey) {
+    const inviteCode = member.inviteCode || `dm_${crypto.randomBytes(5).toString('hex')}`;
+    const synced = await relayRequest('/admin/members', { method: 'POST', body: JSON.stringify({ id: member.id, name: member.name, telegramUsername: member.telegramUsername, telegramId: member.telegramId || '', chatId: member.chatId || '', inviteCode }) }, true);
+    if (synced.member?.id) member.id = synced.member.id;
+    if (synced.member && !synced.member.invitePending) member.inviteCode = '';
+    persist(); publish();
+  }
+  return { id: member.id, name: member.name, telegramUsername: member.telegramUsername, botName: state.telegram.botName, inviteCode: member.inviteCode, inviteLink: member.inviteCode && state.telegram.botName ? `https://t.me/${state.telegram.botName}?start=${member.inviteCode}` : '' };
 });
 ipcMain.handle('workspace:copy-invite', (_e, id) => { if (!state.relay.adminReady) throw new Error('Only the workspace administrator can manage invites.'); const member = state.members.find(item => item.id === id); if (!member?.inviteCode || !state.telegram.botName) return false; clipboard.writeText(`https://t.me/${state.telegram.botName}?start=${member.inviteCode}`); return true; });
 ipcMain.handle('workspace:remove-member', async (_e, id) => { if (!state.relay.adminReady) throw new Error('Only the workspace administrator can remove people.'); const member = state.members.find(item => item.id === id); if (member?.status === 'online') memberStop(member); state.members = state.members.filter(item => item.id !== id); persist(); publish(); if (relayUrl() && state.relay.adminKey) await relayRequest(`/admin/members/${encodeURIComponent(id)}`, { method: 'DELETE' }, true); return true; });
@@ -354,7 +368,9 @@ ipcMain.handle('relay:configure', async (_e, input) => {
     state.relay.adminReady = true;
     state.telegram = { ...state.telegram, token, botName: result.botName, connected: false, chatId: '', error: '' };
     for (const member of state.members) {
-      await relayRequest('/admin/members', { method: 'POST', body: JSON.stringify({ id: member.id, name: member.name, telegramUsername: member.telegramUsername, telegramId: member.telegramId || '', chatId: member.chatId || '', inviteCode: member.inviteCode || `dm_${crypto.randomBytes(5).toString('hex')}` }) }, true);
+      const synced = await relayRequest('/admin/members', { method: 'POST', body: JSON.stringify({ id: member.id, name: member.name, telegramUsername: member.telegramUsername, telegramId: member.telegramId || '', chatId: member.chatId || '', inviteCode: member.inviteCode || `dm_${crypto.randomBytes(5).toString('hex')}` }) }, true);
+      if (synced.member?.id) member.id = synced.member.id;
+      if (synced.member && !synced.member.invitePending) member.inviteCode = '';
     }
     persist(); publish(); return { botName: result.botName };
   } catch (err) { state.relay.adminReady = false; persist(); publish(); throw err; }

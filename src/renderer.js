@@ -50,8 +50,8 @@ function ensureWorkspaceUi() {
       event.preventDefault(); const error = $('#member-form-error'); error.textContent = '';
       try {
         const member = await window.tracker.addWorkspaceMember({ name: $('#member-name').value, telegramUsername: $('#member-telegram-username').value });
-        $('#member-form').reset(); await window.tracker.copyWorkspaceInvite(member.id); await renderWorkspace();
-        toast(`Added ${member.name}. Share their invite link so they can join the bot.`);
+        $('#member-form').reset(); if (member.inviteCode) await window.tracker.copyWorkspaceInvite(member.id); await renderWorkspace();
+        toast(member.inviteCode ? `Added ${member.name}. Invite link copied.` : `${member.name} is already linked. They can pair their computer now.`);
       } catch (err) { error.textContent = err.message; }
     });
     $('#workspace-members').addEventListener('click', async event => {
