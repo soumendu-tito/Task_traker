@@ -103,8 +103,10 @@ async function handleTelegramMessage(msg) {
 
   if (command === '/start' && arg.startsWith('dv_')) {
     const pair = db.pairs.find(item => item.code === arg && item.expiresAt > Date.now());
-    const member = memberByTelegram(msg.from);
-    if (!pair || !member || member.id !== pair.memberId) { await tg('sendMessage', { chat_id: chatId, text: 'That computer pairing link has expired or belongs to a different Telegram account. Generate a new link in Task Tracker.' }); return; }
+    const member = pair && db.members.find(item => item.id === pair.memberId);
+    const telegramId = String(msg.from?.id || ''); const usernameMatches = normalizeUsername(msg.from?.username) === normalizeUsername(member?.telegramUsername);
+    if (!pair || !member || (member.telegramId ? String(member.telegramId) !== telegramId : !usernameMatches)) { await tg('sendMessage', { chat_id: chatId, text: 'That computer link is expired, belongs to another Telegram account, or your username has not been added to this workspace. Ask the workspace owner to confirm your username and generate a fresh link.' }); return; }
+    if (!member.telegramId) { member.telegramId = telegramId; member.chatId = chatId; member.inviteCode = ''; member.status = 'offline'; member.lastSeen = Date.now(); }
     const agentToken = crypto.randomBytes(32).toString('base64url'); member.deviceTokenHash = tokenHash(agentToken); member.deviceId = pair.deviceId; member.lastHeartbeat = Date.now(); pair.agentToken = agentToken; pair.paired = true; saveDb();
     await tg('sendMessage', { chat_id: chatId, text: 'Telegram authorization accepted. Keep Task Tracker open on the computer that generated this link; it will finish pairing and then show as connected. After that, use /on to start tracking or /off to stop.' }); return;
   }
@@ -178,8 +180,8 @@ async function route(req, res) {
     return json(res, 404, { error: 'Unknown admin route.' });
   }
   if (req.method === 'POST' && url.pathname === '/agent/pair') {
-    const input = await body(req); const username = normalizeUsername(input.username); const member = db.members.find(item => normalizeUsername(item.telegramUsername) === username && item.telegramId);
-    if (!member) return json(res, 403, { error: 'Your Telegram account is not linked to this workspace yet. Open the workspace invite in Telegram first.' });
+    const input = await body(req); const username = normalizeUsername(input.username); const member = db.members.find(item => normalizeUsername(item.telegramUsername) === username);
+    if (!member) return json(res, 403, { error: 'This Telegram username has not been added to the workspace. Ask the workspace owner to add or sync it, then try again.' });
     const code = `dv_${crypto.randomBytes(12).toString('hex')}`; const deviceId = String(input.deviceId || crypto.randomUUID());
     db.pairs = db.pairs.filter(pair => pair.expiresAt > Date.now()); db.pairs.push({ code, memberId: member.id, deviceId, expiresAt: Date.now() + 10 * 60_000, paired: false, agentToken: '' }); saveDb();
     return json(res, 200, { code, botName: db.botName, inviteLink: `https://t.me/${db.botName}?start=${code}` });
