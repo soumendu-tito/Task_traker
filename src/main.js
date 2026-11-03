@@ -319,7 +319,13 @@ ipcMain.handle('workspace:list', async () => {
     try {
       const result = await relayRequest('/admin/members', {}, true);
       const localPhotos = new Map(workspaceMembers().map(member => [normalizeTelegramUsername(member.telegramUsername), member.photo]));
-      return [{ id: 'owner', name: state.profile.name || 'Workspace owner', status: state.tracking.active ? 'online' : 'offline', totalSeconds: snapshot().tracking.activeSeconds, isOwner: true }, ...result.members.map(member => ({ ...member, telegramId: '', inviteCode: '', photo: localPhotos.get(normalizeTelegramUsername(member.telegramUsername)) || '', lastSeen: member.lastSeen ? new Date(member.lastSeen).toISOString() : null }))];
+      const relayMembers = result.members.map(member => ({ ...member, telegramId: '', inviteCode: '', photo: localPhotos.get(normalizeTelegramUsername(member.telegramUsername)) || '', lastSeen: member.lastSeen ? new Date(member.lastSeen).toISOString() : null }));
+      const ownerUsername = normalizeTelegramUsername(state.relay.username);
+      const ownerMember = ownerUsername && relayMembers.find(member => normalizeTelegramUsername(member.telegramUsername) === ownerUsername);
+      if (ownerMember) {
+        return relayMembers.map(member => member.id === ownerMember.id ? { ...member, name: state.profile.name || member.name, status: state.tracking.active ? 'online' : member.status, totalSeconds: snapshot().tracking.activeSeconds, isOwner: true } : member);
+      }
+      return [{ id: 'owner', name: state.profile.name || 'Workspace owner', status: state.tracking.active ? 'online' : 'offline', totalSeconds: snapshot().tracking.activeSeconds, isOwner: true }, ...relayMembers];
     } catch (err) { console.warn('Relay workspace list:', err.message); }
   }
   return workspaceMembers().map(member => ({ ...member, inviteLink: member.inviteCode ? `https://t.me/${state.telegram.botName}?start=${member.inviteCode}` : '' }));
