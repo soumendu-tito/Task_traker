@@ -40,6 +40,10 @@ function ensureWorkspaceUi() {
   if (content && !$('#view-workspace')) {
     const section = document.createElement('section'); section.className = 'view'; section.id = 'view-workspace';
     section.innerHTML = `<div class="page-title-row"><div><div class="eyebrow"><span class="eyebrow-line"></span> WORK BETTER TOGETHER</div><h1>Workspace</h1><p class="subtitle">Invite your team and see who's in focus.</p></div></div><div class="team-invite-notice"><b>How Telegram invites work</b><p>Telegram bots cannot start a chat with someone first. Add their Telegram username, then share the invite link. They join the bot by opening the link and pressing Start.</p></div><article class="panel invite-panel"><form id="member-form" class="member-form"><label><span>NAME</span><input id="member-name" required maxlength="100" placeholder="Teammate name"></label><label><span>TELEGRAM USERNAME</span><input id="member-telegram-username" required placeholder="@teammate" autocomplete="username"></label><button class="button button-primary">＋ Add person</button></form><div id="member-form-error" class="inline-error"></div></article><div class="section-heading team-heading"><div><div class="card-kicker">YOUR PEOPLE</div><h2>Workspace members</h2></div><span id="member-count" class="capture-count">0 people</span></div><div id="workspace-members" class="member-grid"></div></section>`;
+    const memberHelp = section.querySelector('.team-invite-notice'); memberHelp.id = 'member-invite-help'; memberHelp.hidden = true;
+    const adminNote = document.createElement('div'); adminNote.id = 'member-admin-note'; adminNote.className = 'team-invite-notice'; adminNote.hidden = true; adminNote.innerHTML = '<b>Workspace managed by your administrator</b><p>Ask your workspace administrator to add people and manage invitations.</p>'; memberHelp.before(adminNote);
+    section.querySelector('.invite-panel').id = 'member-admin-panel'; section.querySelector('.invite-panel').hidden = true;
+    section.querySelector('.team-heading').id = 'member-list-heading'; section.querySelector('.team-heading').hidden = true;
     content.append(section);
     $('#member-form').addEventListener('submit', async event => {
       event.preventDefault(); const error = $('#member-form-error'); error.textContent = '';
@@ -58,7 +62,7 @@ function ensureWorkspaceUi() {
   }
 }
 
-function ensureRelayUi() {
+function ensureRelayUiLegacy() {
   const view = $('#view-telegram'); if (!view || $('#relay-setup')) return;
   const panel = document.createElement('article'); panel.className = 'panel relay-setup-panel'; panel.id = 'relay-setup';
   panel.innerHTML = `<div class="eyebrow"><span class="eyebrow-line"></span> MULTI-COMPUTER TRACKING</div><h2>Connect this computer to the workspace relay</h2><p class="subtitle">The relay delivers Telegram commands to each running desktop app. Configure it once for the workspace, then pair every teammate’s computer.</p><label class="relay-field"><span>PUBLIC HTTPS RELAY URL</span><input id="relay-url" type="url" placeholder="https://your-relay.example.com"></label><div class="relay-owner-setup"><h3>Workspace owner setup</h3><p>On the owner computer, enter the relay admin token and bot token to switch this bot to the secure webhook relay.</p><div class="relay-form-grid"><label class="relay-field"><span>RELAY ADMIN TOKEN</span><input id="relay-admin-key" type="password" placeholder="From relay hosting settings"></label><label class="relay-field"><span>TELEGRAM BOT TOKEN</span><input id="relay-bot-token" type="password" placeholder="123456:ABC..."></label></div><button id="relay-configure" class="button button-primary">Connect bot to relay</button></div><div class="relay-device-pair"><h3>Pair this computer</h3><p>Each user enters their Telegram username, generates a link and opens it in Telegram to authorize this computer.</p><div class="relay-form-grid"><label class="relay-field"><span>YOUR TELEGRAM USERNAME</span><input id="relay-username" placeholder="@username" autocomplete="username"></label><div class="relay-pair-action"><button id="relay-pair-device" class="button button-secondary">Generate computer link</button><span id="relay-device-status" class="relay-device-status">Not paired</span></div></div><div class="relay-link-row" id="relay-link-row"><code id="relay-link"></code><button id="relay-copy-link" class="text-link">Copy link</button></div></div><div id="relay-message" class="relay-message"></div><div class="relay-server-note">A public Node.js relay and HTTPS domain must be deployed before these controls can connect. See <b>README.md</b> under “Remote computer relay”.</div></article>`;
@@ -78,8 +82,37 @@ function ensureRelayUi() {
   $('#relay-copy-link').addEventListener('click', async () => { await window.tracker.copyText($('#relay-link').textContent); toast('Computer pairing link copied.'); });
 }
 
+function ensureRelayUi() {
+  const view = $('#view-telegram'); if (!view || $('#relay-setup')) return;
+  const panel = document.createElement('article'); panel.className = 'panel relay-setup-panel'; panel.id = 'relay-setup';
+  panel.innerHTML = `<div class="eyebrow"><span class="eyebrow-line"></span> MULTI-COMPUTER TRACKING</div><h2>Connect this computer to the workspace relay</h2><p class="subtitle">Workspace management is restricted to the administrator. Teammates can pair their own computer below.</p><label class="relay-field"><span>PUBLIC HTTPS RELAY URL</span><input id="relay-url" type="url" placeholder="https://your-relay.example.com"></label><section id="relay-admin-gate" class="relay-admin-gate"><h3>Administrator access</h3><p>Enter the private relay admin token to unlock bot and workspace management.</p><div class="relay-form-grid"><label class="relay-field"><span>RELAY ADMIN TOKEN</span><input id="relay-admin-key" type="password" placeholder="Administrator token from Render" autocomplete="off"></label><div class="relay-pair-action"><button id="relay-admin-unlock" class="button button-secondary">Verify administrator</button></div></div></section><section class="relay-owner-setup" hidden><h3>Administrator controls</h3><p>Connect the workspace Telegram bot. These controls are available only after the relay verifies the administrator token.</p><label class="relay-field"><span>TELEGRAM BOT TOKEN</span><input id="relay-bot-token" type="password" placeholder="123456:ABC..." autocomplete="off"></label><button id="relay-configure" class="button button-primary">Connect bot to relay</button></section><section class="relay-device-pair"><h3>Pair this computer</h3><p>Enter your Telegram username, generate a link and open it in Telegram to authorize this computer.</p><div class="relay-form-grid"><label class="relay-field"><span>YOUR TELEGRAM USERNAME</span><input id="relay-username" placeholder="@username" autocomplete="username"></label><div class="relay-pair-action"><button id="relay-pair-device" class="button button-secondary">Generate computer link</button><span id="relay-device-status" class="relay-device-status">Not paired</span></div></div><div class="relay-link-row" id="relay-link-row"><code id="relay-link"></code><button id="relay-copy-link" class="text-link">Copy link</button></div></section><div id="relay-message" class="relay-message"></div><div class="relay-server-note">Ask your workspace administrator for the relay URL and a workspace invite before pairing.</div></article>`;
+  const target = view.querySelector('.telegram-setup-grid'); target.before(panel);
+  $('#relay-admin-unlock').addEventListener('click', async () => {
+    const button = $('#relay-admin-unlock'); button.disabled = true; $('#relay-message').classList.remove('error'); $('#relay-message').textContent = 'Verifying administrator access…';
+    try { await window.tracker.verifyRelayAdmin({ url: $('#relay-url').value, adminKey: $('#relay-admin-key').value }); $('#relay-admin-key').value = ''; $('#relay-message').textContent = 'Administrator access verified. Bot and workspace management are unlocked on this computer.'; toast('Administrator access verified.'); const state = await window.tracker.getState(); render(state); await renderWorkspace(); }
+    catch (error) { $('#relay-message').classList.add('error'); $('#relay-message').textContent = error.message; }
+    finally { button.disabled = false; }
+  });
+  $('#relay-configure').addEventListener('click', async () => {
+    const button = $('#relay-configure'); button.disabled = true; $('#relay-message').classList.remove('error'); $('#relay-message').textContent = 'Configuring the Telegram webhook…';
+    try { const result = await window.tracker.configureRelay({ url: $('#relay-url').value, botToken: $('#relay-bot-token').value }); $('#relay-bot-token').value = ''; $('#relay-message').textContent = `Bot @${result.botName} is connected to the relay. Add people from Workspace.`; toast('Telegram bot connected to the relay.'); await renderWorkspace(); }
+    catch (error) { $('#relay-message').classList.add('error'); $('#relay-message').textContent = error.message; }
+    finally { button.disabled = false; }
+  });
+  $('#relay-pair-device').addEventListener('click', async () => {
+    const button = $('#relay-pair-device'); button.disabled = true; $('#relay-message').classList.remove('error'); $('#relay-message').textContent = 'Creating a secure computer pairing link…';
+    try { await window.tracker.saveRelayAgentSettings({ url: $('#relay-url').value, username: $('#relay-username').value }); const result = await window.tracker.pairRelayDevice({}); $('#relay-link').textContent = result.inviteLink; $('#relay-link-row').classList.add('visible'); $('#relay-message').textContent = `Open this link in Telegram while signed in as @${$('#relay-username').value.replace(/^@/, '')}. Press Start to pair this computer.`; }
+    catch (error) { $('#relay-message').classList.add('error'); $('#relay-message').textContent = error.message; }
+    finally { button.disabled = false; }
+  });
+  $('#relay-copy-link').addEventListener('click', async () => { await window.tracker.copyText($('#relay-link').textContent); toast('Computer pairing link copied.'); });
+}
+
 async function renderWorkspace() {
   if (!$('#view-workspace')) return;
+  const isAdmin = !!appState?.relay?.adminReady;
+  $('#member-admin-note').hidden = isAdmin; $('#member-invite-help').hidden = !isAdmin; $('#member-admin-panel').hidden = !isAdmin; $('#member-list-heading').hidden = !isAdmin;
+  if (!isAdmin) { $('#workspace-members').innerHTML = ''; $('#member-count').textContent = 'Administrator only'; return; }
   const members = await window.tracker.listWorkspaceMembers(); const host = $('#workspace-members');
   $('#member-count').textContent = `${members.length} ${members.length === 1 ? 'person' : 'people'}`;
   host.innerHTML = members.map(member => {
@@ -117,7 +150,7 @@ function setTimer(seconds) {
   $('#report-hours').innerHTML = `${h}<span>h</span> ${fmt(m)}<span>m</span>`;
 }
 function render(state) {
-  const nextWorkspaceKey = JSON.stringify({ tracking: state.tracking.active, members: (state.members || []).map(member => [member.id, member.status, member.lastSeen, member.name, member.telegramUsername]) });
+  const nextWorkspaceKey = JSON.stringify({ tracking: state.tracking.active, adminReady: !!state.relay?.adminReady, members: (state.members || []).map(member => [member.id, member.status, member.lastSeen, member.name, member.telegramUsername]) });
   const workspaceChanged = nextWorkspaceKey !== workspaceStatusKey; workspaceStatusKey = nextWorkspaceKey;
   appState = state;
   const name = state.profile.name || 'Alex Morgan';
@@ -150,7 +183,10 @@ function render(state) {
   ensureCaptureUi();
   ensureWorkspaceUi();
   ensureRelayUi();
-  const localTelegramSetup = $('#view-telegram .telegram-setup-grid'); if (localTelegramSetup) localTelegramSetup.hidden = !!state.relay?.url;
+  const adminReady = !!state.relay?.adminReady;
+  $('#relay-admin-gate').hidden = adminReady;
+  $('.relay-owner-setup').hidden = !adminReady;
+  const localTelegramSetup = $('#view-telegram .telegram-setup-grid'); if (localTelegramSetup) localTelegramSetup.hidden = !!state.relay?.url || !adminReady;
   if (!$('#relay-url').value && state.relay?.url) $('#relay-url').value = state.relay.url;
   if (!$('#relay-username').value && state.relay?.username) $('#relay-username').value = `@${state.relay.username}`;
   $('#relay-device-status').textContent = state.relay?.agentToken ? 'This computer is paired' : state.relay?.pendingCode ? 'Waiting for Telegram confirmation…' : 'Not paired';

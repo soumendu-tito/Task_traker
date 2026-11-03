@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 let win;
 const dataDir = () => path.join(app.getPath('userData'), 'tracker-data');
 const stateFile = () => path.join(dataDir(), 'state.json');
+const stateBackupFile = () => `${stateFile()}.bak`;
 let state;
 let captureTimer;
 let captureBusy = false;
@@ -24,20 +25,35 @@ function defaults() {
     tasks: [], screenshots: [], sessions: [], members: [],
     preferences: { screenshots: true, intervalMinutes: 5 },
     telegram: { token: '', chatId: '', connected: false, botName: '', offset: 0, error: '' },
-    relay: { url: '', adminKey: '', username: '', agentToken: '', deviceId: '', pendingCode: '' },
+    relay: { url: '', adminKey: '', adminReady: false, username: '', agentToken: '', deviceId: '', pendingCode: '' },
   };
 }
 function persist() {
   fs.mkdirSync(dataDir(), { recursive: true });
-  fs.writeFileSync(stateFile(), JSON.stringify(state, null, 2), 'utf8');
+  const tmp = `${stateFile()}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2), { encoding: 'utf8', mode: 0o600 });
+  if (fs.existsSync(stateFile())) fs.copyFileSync(stateFile(), stateBackupFile());
+  fs.renameSync(tmp, stateFile());
 }
 function load() {
-  try { state = { ...defaults(), ...JSON.parse(fs.readFileSync(stateFile(), 'utf8')) }; }
-  catch { state = defaults(); }
+  try {
+    state = { ...defaults(), ...JSON.parse(fs.readFileSync(stateFile(), 'utf8')) };
+  } catch (error) {
+    if (error.code === 'ENOENT' && !fs.existsSync(stateBackupFile())) state = defaults();
+    else {
+      try {
+        state = { ...defaults(), ...JSON.parse(fs.readFileSync(stateBackupFile(), 'utf8')) };
+        fs.copyFileSync(stateBackupFile(), stateFile());
+        console.warn(`Recovered desktop state from backup: ${error.message}`);
+      } catch (backupError) {
+        throw new Error(`Saved Task Tracker data could not be read. The app did not overwrite it. Keep these files for recovery: ${stateFile()} and ${stateBackupFile()}. ${backupError.message}`);
+      }
+    }
+  }
   state.preferences = { ...state.preferences, screenshots: true, intervalMinutes: 5 };
   state.sessions = Array.isArray(state.sessions) ? state.sessions : [];
   state.members = Array.isArray(state.members) ? state.members : [];
-  state.relay = { ...defaults().relay, ...state.relay, deviceId: state.relay?.deviceId || crypto.randomUUID() };
+  state.relay = { ...defaults().relay, ...state.relay, adminReady: false, deviceId: state.relay?.deviceId || crypto.randomUUID() };
   for (const member of state.members) { member.sessions = member.sessions || []; if (member.status === 'online') memberStop(member); }
   if (state.tracking.active && state.tracking.since) sessionStartedAt = new Date(state.tracking.since).getTime();
   else state.tracking.active = false;
@@ -274,7 +290,7 @@ function startTelegram() { if (telegramTimer) clearInterval(telegramTimer); tele
 
 ipcMain.handle('state:get', () => snapshot());
 ipcMain.handle('workspace:list', async () => {
-  if (relayUrl() && state.relay.adminKey) {
+  if (relayUrl() && state.relay.adminReady && state.relay.adminKey) {
     try {
       const result = await relayRequest('/admin/members', {}, true);
       const localPhotos = new Map(workspaceMembers().map(member => [normalizeTelegramUsername(member.telegramUsername), member.photo]));
@@ -284,12 +300,13 @@ ipcMain.handle('workspace:list', async () => {
   return workspaceMembers().map(member => ({ ...member, inviteLink: member.inviteCode ? `https://t.me/${state.telegram.botName}?start=${member.inviteCode}` : '' }));
 });
 ipcMain.handle('workspace:add-member', async (_e, data) => {
+  if (!state.relay.adminReady) throw new Error('Only the workspace administrator can add people.');
   const member = addWorkspaceMember(data.name, data.telegramUsername);
   if (relayUrl() && state.relay.adminKey) await relayRequest('/admin/members', { method: 'POST', body: JSON.stringify({ id: member.id, name: member.name, telegramUsername: member.telegramUsername, telegramId: state.members.find(item => item.id === member.id)?.telegramId, chatId: state.members.find(item => item.id === member.id)?.chatId, inviteCode: member.inviteCode }) }, true);
   return member;
 });
-ipcMain.handle('workspace:copy-invite', (_e, id) => { const member = state.members.find(item => item.id === id); if (!member?.inviteCode || !state.telegram.botName) return false; clipboard.writeText(`https://t.me/${state.telegram.botName}?start=${member.inviteCode}`); return true; });
-ipcMain.handle('workspace:remove-member', async (_e, id) => { const member = state.members.find(item => item.id === id); if (member?.status === 'online') memberStop(member); state.members = state.members.filter(item => item.id !== id); persist(); publish(); if (relayUrl() && state.relay.adminKey) await relayRequest(`/admin/members/${encodeURIComponent(id)}`, { method: 'DELETE' }, true); return true; });
+ipcMain.handle('workspace:copy-invite', (_e, id) => { if (!state.relay.adminReady) throw new Error('Only the workspace administrator can manage invites.'); const member = state.members.find(item => item.id === id); if (!member?.inviteCode || !state.telegram.botName) return false; clipboard.writeText(`https://t.me/${state.telegram.botName}?start=${member.inviteCode}`); return true; });
+ipcMain.handle('workspace:remove-member', async (_e, id) => { if (!state.relay.adminReady) throw new Error('Only the workspace administrator can remove people.'); const member = state.members.find(item => item.id === id); if (member?.status === 'online') memberStop(member); state.members = state.members.filter(item => item.id !== id); persist(); publish(); if (relayUrl() && state.relay.adminKey) await relayRequest(`/admin/members/${encodeURIComponent(id)}`, { method: 'DELETE' }, true); return true; });
 ipcMain.handle('profile:save', (_e, profile) => { state.profile = { ...state.profile, name: String(profile.name || '').trim(), email: String(profile.email || '').trim(), role: String(profile.role || 'Team member').trim() }; persist(); publish(); return snapshot(); });
 ipcMain.handle('preferences:set', (_e, prefs) => { state.preferences = { ...state.preferences, ...prefs, screenshots: true, intervalMinutes: 5 }; persist(); startCapture(); publish(); return snapshot(); });
 ipcMain.handle('tracking:start', startTracking); ipcMain.handle('tracking:stop', stopTracking);
@@ -326,19 +343,34 @@ ipcMain.handle('telegram:save', async (_e, data) => { const token = String(data.
 ipcMain.handle('telegram:pair', async () => { if (!state.telegram.token) throw new Error('Save a bot token first.'); const code = String(crypto.randomInt(100000, 999999)); pendingPair = { code, expiresAt: Date.now() + 10 * 60_000 }; return { code, botName: state.telegram.botName }; });
 ipcMain.handle('telegram:disconnect', () => { state.telegram = { token: '', chatId: '', connected: false, botName: '', offset: 0, error: '' }; telegramOffset = 0; pendingPair = null; persist(); publish(); return true; });
 ipcMain.handle('relay:configure', async (_e, input) => {
-  const url = String(input.url || '').trim().replace(/\/$/, ''); const adminKey = String(input.adminKey || '').trim(); const token = String(input.botToken || '').trim();
+  const url = String(input.url || state.relay.url || '').trim().replace(/\/$/, ''); const adminKey = String(input.adminKey || state.relay.adminKey || '').trim(); const token = String(input.botToken || '').trim();
   if (!/^https:\/\//i.test(url)) throw new Error('The relay address must start with https://.');
   if (!adminKey || !token) throw new Error('Enter the relay admin token and Telegram bot token.');
   if (telegramTimer) { clearInterval(telegramTimer); telegramTimer = null; }
-  state.relay.url = url; state.relay.adminKey = adminKey; persist();
+  state.relay.url = url; state.relay.adminKey = adminKey; state.relay.adminReady = false;
   try {
+    await relayRequest('/admin/verify', {}, true);
     const result = await relayRequest('/admin/setup', { method: 'POST', body: JSON.stringify({ botToken: token }) }, true);
+    state.relay.adminReady = true;
     state.telegram = { ...state.telegram, token, botName: result.botName, connected: false, chatId: '', error: '' };
     for (const member of state.members) {
       await relayRequest('/admin/members', { method: 'POST', body: JSON.stringify({ id: member.id, name: member.name, telegramUsername: member.telegramUsername, telegramId: member.telegramId || '', chatId: member.chatId || '', inviteCode: member.inviteCode || `dm_${crypto.randomBytes(5).toString('hex')}` }) }, true);
     }
     persist(); publish(); return { botName: result.botName };
-  } catch (err) { throw err; }
+  } catch (err) { state.relay.adminReady = false; persist(); publish(); throw err; }
+});
+ipcMain.handle('relay:verify-admin', async (_e, input) => {
+  const url = String(input.url || '').trim().replace(/\/$/, ''); const adminKey = String(input.adminKey || '').trim();
+  if (!/^https:\/\//i.test(url)) throw new Error('The relay address must start with https://.');
+  if (!adminKey) throw new Error('Enter the relay admin token from Render.');
+  const previous = { url: state.relay.url, adminKey: state.relay.adminKey, adminReady: state.relay.adminReady };
+  state.relay.url = url; state.relay.adminKey = adminKey;
+  try {
+    await relayRequest('/admin/verify', {}, true);
+    state.relay.adminReady = true; persist(); publish(); return { ok: true };
+  } catch (error) {
+    Object.assign(state.relay, previous); throw error;
+  }
 });
 ipcMain.handle('relay:save-agent-settings', (_e, input) => {
   const url = String(input.url || '').trim().replace(/\/$/, ''); const username = String(input.username || '').trim().replace(/^@/, '');
@@ -370,6 +402,14 @@ ipcMain.handle('assistant:ask', (_e, question) => {
   if (/done|complete/.test(q)) return `${state.tasks.filter(t => t.status === 'Completed').length} tasks completed so far. Keep marking tasks complete as you go.`;
   return 'I’m your local task helper. Ask me about your open tasks, completed work or tracked time. You can also add a task from the Tasks tab.';
 });
-app.whenReady().then(() => { load(); createWindow(); setInterval(publish, 1000); if (state.tracking.active) { state.tracking.active = false; state.tracking.since = null; sessionStartedAt = null; persist(); } if (state.telegram.token && !state.relay.url) startTelegram(); if (state.relay.agentToken) { startAgentRelay(); reportAgentStatus(); } if (state.relay.pendingCode) { relayPairTimer = setInterval(checkRelayPair, 2500); checkRelayPair(); } });
+app.whenReady().then(() => {
+  try { load(); }
+  catch (error) { dialog.showErrorBox('Could not load saved Task Tracker data', error.message); app.quit(); return; }
+  createWindow(); setInterval(publish, 1000);
+  if (state.tracking.active) { state.tracking.active = false; state.tracking.since = null; sessionStartedAt = null; persist(); }
+  if (state.telegram.token && !state.relay.url) startTelegram();
+  if (state.relay.agentToken) { startAgentRelay(); reportAgentStatus(); }
+  if (state.relay.pendingCode) { relayPairTimer = setInterval(checkRelayPair, 2500); checkRelayPair(); }
+});
 app.on('before-quit', () => { if (state?.tracking.active) stopTracking(); for (const member of state?.members || []) if (member.status === 'online') memberStop(member); stopCapture(); if (telegramTimer) clearInterval(telegramTimer); if (relayPairTimer) clearInterval(relayPairTimer); });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('tracker', {
   telegramPair: () => ipcRenderer.invoke('telegram:pair'),
   telegramDisconnect: () => ipcRenderer.invoke('telegram:disconnect'),
   configureRelay: (data) => ipcRenderer.invoke('relay:configure', data),
+  verifyRelayAdmin: (data) => ipcRenderer.invoke('relay:verify-admin', data),
   saveRelayAgentSettings: (data) => ipcRenderer.invoke('relay:save-agent-settings', data),
   pairRelayDevice: (data) => ipcRenderer.invoke('relay:pair-device', data),
   copyText: (value) => ipcRenderer.invoke('relay:copy-text', value),

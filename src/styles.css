@@ -8,3 +8,4 @@
 @media(max-width:760px){.member-form{grid-template-columns:1fr}.member-grid{grid-template-columns:1fr}.weekly-days{gap:5px}.week-day>b{font-size:7px}.weekly-report-section{padding:13px}.weekly-title-row{align-items:flex-start;gap:8px}.weekly-title-row h2{font-size:14px}}
 @media(max-width:760px){.relay-form-grid{grid-template-columns:1fr}.relay-pair-action{padding-top:0}.relay-setup-panel{padding:15px}}
 .relay-message.error{color:#b6535d}
+.relay-setup-panel [hidden],#view-workspace [hidden]{display:none!important}.relay-admin-gate,.relay-owner-setup{border-top:1px solid #eeeef4;margin-top:15px;padding-top:15px}.relay-admin-gate h3,.relay-owner-setup h3{font:700 12px Georgia;margin:0 0 6px}.relay-admin-gate p,.relay-owner-setup p{font-size:9px;color:#888da1;margin:0 0 12px}

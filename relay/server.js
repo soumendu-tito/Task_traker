@@ -10,11 +10,54 @@ const PUBLIC_URL = String(process.env.PUBLIC_URL || '').replace(/\/$/, '');
 const ADMIN_TOKEN = process.env.RELAY_ADMIN_TOKEN || '';
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'relay.json');
+const DB_BACKUP_FILE = `${DB_FILE}.bak`;
 let db;
 
 function blankDb() { return { botToken: '', botName: '', webhookSecret: '', members: [], pairs: [], offset: 0, processedUpdates: [] }; }
-function saveDb() { fs.mkdirSync(DATA_DIR, { recursive: true }); const tmp = `${DB_FILE}.tmp`; fs.writeFileSync(tmp, JSON.stringify(db, null, 2)); fs.renameSync(tmp, DB_FILE); }
-function loadDb() { try { db = { ...blankDb(), ...JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) }; } catch { db = blankDb(); } db.processedUpdates = Array.isArray(db.processedUpdates) ? db.processedUpdates : []; }
+function saveDb() {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const tmp = `${DB_FILE}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(db, null, 2), { encoding: 'utf8', mode: 0o600 });
+  if (fs.existsSync(DB_FILE)) fs.copyFileSync(DB_FILE, DB_BACKUP_FILE);
+  fs.renameSync(tmp, DB_FILE);
+}
+function parseDb(file) {
+  const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Relay database has an invalid format.');
+  return { ...blankDb(), ...parsed };
+}
+function loadDb() {
+  try {
+    db = parseDb(DB_FILE);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      if (fs.existsSync(DB_BACKUP_FILE)) {
+        try {
+          db = parseDb(DB_BACKUP_FILE);
+          fs.mkdirSync(DATA_DIR, { recursive: true });
+          fs.copyFileSync(DB_BACKUP_FILE, DB_FILE);
+          console.warn('Recovered relay database from its backup file.');
+        } catch (backupError) {
+          throw new Error(`Relay database and backup could not be read. Preserve ${DB_FILE} and ${DB_BACKUP_FILE} for recovery. ${backupError.message}`);
+        }
+      } else {
+        db = blankDb();
+        saveDb();
+      }
+    } else {
+      try {
+        db = parseDb(DB_BACKUP_FILE);
+        fs.copyFileSync(DB_BACKUP_FILE, DB_FILE);
+        console.warn(`Recovered unreadable relay database from backup: ${error.message}`);
+      } catch (backupError) {
+        throw new Error(`Refusing to start with an empty relay database. Database error: ${error.message}. Backup error: ${backupError.message}`);
+      }
+    }
+  }
+  db.members = Array.isArray(db.members) ? db.members : [];
+  db.pairs = Array.isArray(db.pairs) ? db.pairs : [];
+  db.processedUpdates = Array.isArray(db.processedUpdates) ? db.processedUpdates : [];
+}
 function normalizeUsername(value) { return String(value || '').trim().replace(/^@/, '').toLowerCase(); }
 function tokenHash(value) { return crypto.createHash('sha256').update(String(value)).digest('hex'); }
 function secureEqual(a, b) { const x = Buffer.from(String(a)); const y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); }
@@ -80,7 +123,8 @@ async function handleTelegramMessage(msg) {
 async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (req.method === 'OPTIONS') return json(res, 204, {});
-  if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, service: 'task-tracker-relay' });
+  if (req.method === 'GET' && url.pathname === '/') return json(res, 200, { ok: true, service: 'task-tracker-relay', message: 'Relay is running. Use /health for the health check.' });
+  if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, service: 'task-tracker-relay', databasePresent: fs.existsSync(DB_FILE), backupPresent: fs.existsSync(DB_BACKUP_FILE), persistentDataDirConfigured: !!process.env.DATA_DIR });
   if (req.method === 'POST' && url.pathname.startsWith('/webhook/')) {
     if (!db.webhookSecret || url.pathname !== `/webhook/${db.webhookSecret}` || !secureEqual(req.headers['x-telegram-bot-api-secret-token'] || '', db.webhookSecret)) return json(res, 401, { error: 'Unauthorized webhook.' });
     const update = await body(req);
@@ -90,6 +134,7 @@ async function route(req, res) {
   }
   if (url.pathname.startsWith('/admin/')) {
     if (!admin(req)) return json(res, 401, { error: 'Invalid relay admin token.' });
+    if (req.method === 'GET' && url.pathname === '/admin/verify') return json(res, 200, { ok: true });
     if (req.method === 'POST' && url.pathname === '/admin/setup') {
       if (!PUBLIC_URL) return json(res, 500, { error: 'Set PUBLIC_URL to this relay’s HTTPS address before connecting Telegram.' });
       const input = await body(req); const botToken = String(input.botToken || '').trim(); if (!botToken) return json(res, 400, { error: 'Telegram bot token is required.' });

@@ -42,12 +42,14 @@ Open **Workspace**, enter a teammate's name and Telegram username (with or witho
 
 ## Remote computer relay
 
+The relay admin token is for the workspace owner only. The owner enters it in **Verify administrator** to unlock bot and Workspace management. Teammates need only the public relay URL and their Telegram username to pair their own computers; they must not receive the relay admin token or bot token. Workspace add, invite, and delete controls are hidden until the relay validates admin access. The owner must unlock admin access again after reopening the desktop app.
+
 The relay is required when Telegram commands must control tracking and screenshot capture on each teammate's own computer. It receives Telegram webhooks once and routes commands to the matching running desktop app. Without this service, the desktop app can only update workspace status locally.
 
 1. Deploy this project on a public Node.js host with HTTPS and persistent storage. Set `PUBLIC_URL` to the public HTTPS base URL, `RELAY_ADMIN_TOKEN` to a long random secret, and `DATA_DIR` to a persistent directory. Start the service with `npm run relay` (or the host's equivalent start command).
 2. Check `https://your-relay.example.com/health` returns `{"ok":true,...}`.
-3. On the workspace owner's desktop app, open **Telegram connection → Connect this computer to the workspace relay**. Enter the relay URL, the `RELAY_ADMIN_TOKEN`, and the Telegram bot token, then select **Connect bot to relay**. This configures Telegram's webhook and syncs the workspace members.
-4. Each teammate installs and opens the desktop app. In the same Telegram connection section, they enter the relay URL and their Telegram username, select **Generate computer link**, then open the link in Telegram and press **Start**.
+3. On the workspace owner's desktop app, open **Telegram connection**. Enter the relay URL and RELAY_ADMIN_TOKEN, then choose **Verify administrator**. After verification, enter the Telegram bot token in the administrator controls and choose **Connect bot to relay**. Add or remove people from **Workspace**; these controls are administrator-only.
+4. Each teammate installs and opens the desktop app. They do not need the relay admin token or bot token. In **Telegram connection**, enter the relay URL and their Telegram username, choose **Generate computer link**, then open the link in Telegram and press **Start**.
 5. The paired app must stay running. Telegram `/on`, `/online`, or `on` starts that computer's timer and required screen captures. `/off`, `/offline`, `/break`, or `off` stops them. Commands sent while the app is offline are queued until it reconnects.
 
 Use the same bot token only through the relay after setup; the relay switches it to Telegram webhooks. Keep the admin token private. The relay stores Telegram IDs, workspace usernames, online state, and queued commands in its persistent data file. Screenshots remain on each user's computer.
@@ -64,14 +66,20 @@ Use the same bot token only through the relay after setup; the relay switches it
    - `PUBLIC_URL` = the HTTPS `onrender.com` URL shown for your service, without a trailing slash
 6. Add `/health` as the health check path if Render offers that field, then create the service and wait for it to become live.
 7. Open `https://YOUR-SERVICE.onrender.com/health`. It should return JSON containing `"ok":true`.
-8. In the owner app, open **Telegram connection**, paste that HTTPS URL, the relay admin token, and the bot token, then choose **Connect bot to relay**.
-9. Add each teammate from **Workspace** and share their Telegram invite. After they press **Start** on the invite, each teammate installs the current desktop app, enters the same relay URL and their Telegram username in **Telegram connection**, generates a computer link, and opens it in Telegram.
+8. In the owner app, open **Telegram connection**, enter the relay URL and admin token, and choose **Verify administrator**. Then enter the bot token in the unlocked admin controls and choose **Connect bot to relay**.
+9. Add each teammate from **Workspace** and share their Telegram invite. After they press **Start**, they install the current desktop app, enter the relay URL and their Telegram username, generate a computer link, and open it in Telegram. Teammates never need the admin token or bot token.
 
 Do not set `PORT` manually; Render provides it and the relay listens on that port. Render's web services provide public HTTPS and TLS for the `onrender.com` hostname.
 
+### If relay members or Telegram links disappear after a restart
+
+The relay database lives at `${DATA_DIR}/relay.json`. Render's service filesystem is temporary unless a persistent disk is mounted. In Render, open the service's **Disks** settings and confirm a disk is mounted at `/var/data`; in **Environment**, confirm `DATA_DIR=/var/data`. Save and redeploy, then verify `/health` reports `"persistentDataDirConfigured":true` and `"databasePresent":true`. This field confirms the app is using the configured path; confirm the disk mount in Render as well. The relay also keeps a `relay.json.bak` backup beside the database on that disk. The relay now refuses to silently replace an unreadable database with an empty one and attempts recovery from that backup.
+
+If the relay previously ran without a persistent disk and Render has restarted or redeployed it, its old relay database may already be gone and cannot be recovered from the temporary filesystem. The owner desktop may still have its local workspace member list. After the disk is mounted, open the owner app, reconnect the relay using the same URL, admin token, and bot token, then add or re-invite any missing members and have them press **Start** on their invite link again. Desktop tasks and screenshots are stored separately on each PC and are not backed up to the relay.
+
 ## Screenshots and data
 
-Screenshot capture is required and cannot be disabled. The app saves one screen capture when tracking starts and another every five minutes while tracking is active. Captures stop when tracking is paused and are available in the **Screenshots** tab. Task data and screenshots are stored under Electron's `userData/tracker-data` folder for the current Windows user.
+Screenshot capture is required and cannot be disabled. The app saves one screen capture when tracking starts and another every five minutes while tracking is active. Captures stop when tracking is paused and are available in the **Screenshots** tab. Task data and screenshots are stored under Electron's `userData/tracker-data` folder for the current Windows user. The desktop app keeps a previous-state backup beside `state.json` and attempts recovery if the current state file becomes unreadable; keep both files when troubleshooting.
 
 ## Reports and assistant
 
