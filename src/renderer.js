@@ -180,7 +180,7 @@ function render(state) {
   $('#stat-screenshots').textContent = state.screenshots.length;
   $('#capture-foot').textContent = state.preferences.screenshots ? 'Captured during tracked time' : 'Disabled in settings';
   $('#focus-task').textContent = open[0]?.title || 'Add your first task';
-  $('#telegram-status').textContent = state.telegram.connected ? 'CONNECTED' : state.telegram.botName ? 'BOT READY · NOT PAIRED' : 'NOT CONNECTED';
+  $('#telegram-status').textContent = state.relay?.url ? (state.relay.agentToken ? 'COMPUTER PAIRED' : state.relay.pendingCode ? 'PAIRING…' : 'COMPUTER NOT PAIRED') : state.telegram.connected ? 'CONNECTED' : state.telegram.botName ? 'BOT READY · NOT PAIRED' : 'NOT CONNECTED';
   $('#telegram-nav-dot').classList.toggle('connected', state.telegram.connected);
   $('#pair-button').disabled = !state.telegram.botName;
   $('#connected-message').textContent = state.telegram.connected ? `✓ Connected as ${state.telegram.botName}. Telegram commands are ready.` : '';
