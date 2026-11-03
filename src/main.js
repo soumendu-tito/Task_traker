@@ -400,9 +400,10 @@ ipcMain.handle('telegram:save', async (_e, data) => {
 ipcMain.handle('telegram:pair', async () => { if (!state.telegram.token) throw new Error('Save a bot token first.'); const code = String(crypto.randomInt(100000, 999999)); pendingPair = { code, expiresAt: Date.now() + 10 * 60_000 }; return { code, botName: state.telegram.botName }; });
 ipcMain.handle('telegram:disconnect', () => { state.telegram = { token: '', chatId: '', connected: false, botName: '', offset: 0, error: '' }; telegramOffset = 0; pendingPair = null; persist(); publish(); return true; });
 ipcMain.handle('relay:configure', async (_e, input) => {
-  const url = String(input.url || state.relay.url || '').trim().replace(/\/$/, ''); const adminKey = String(input.adminKey || state.relay.adminKey || '').trim(); const token = String(input.botToken || '').trim();
+  const url = String(input.url || state.relay.url || '').trim().replace(/\/$/, ''); const adminKey = String(input.adminKey || state.relay.adminKey || '').trim(); const token = String(input.botToken || state.telegram.token || '').trim();
   if (!/^https:\/\//i.test(url)) throw new Error('The relay address must start with https://.');
-  if (!adminKey || !token) throw new Error('Enter the relay admin token and Telegram bot token.');
+  if (!adminKey) throw new Error('Administrator access is missing. Click Verify administrator and enter the Render relay admin token first.');
+  if (!token) throw new Error('Telegram bot token is missing. Paste the full token from @BotFather, then click Connect bot to relay.');
   if (telegramTimer) { clearInterval(telegramTimer); telegramTimer = null; }
   state.relay.url = url; state.relay.adminKey = adminKey; state.relay.adminReady = false;
   try {
