@@ -65,12 +65,21 @@ function snapshot() {
 }
 function publish() { if (win && !win.isDestroyed()) win.webContents.send('state:update', snapshot()); }
 function relayUrl() { return String(state.relay?.url || '').trim().replace(/\/$/, ''); }
+async function fetchWithTimeout(url, options = {}, timeoutMs = 15_000, serviceName = 'Remote service') {
+  const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try { return await fetch(url, { ...options, signal: controller.signal }); }
+  catch (error) {
+    if (error.name === 'AbortError') throw new Error(`${serviceName} did not respond within ${Math.ceil(timeoutMs / 1000)} seconds.`);
+    if (error.message === 'fetch failed') throw new Error(`Could not reach ${serviceName.toLowerCase()}. Check your internet connection and service URL.`);
+    throw error;
+  } finally { clearTimeout(timeout); }
+}
 async function relayRequest(route, options = {}, needsAdmin = false) {
   const base = relayUrl(); if (!base) throw new Error('Enter the public HTTPS relay URL first.');
   const headers = { 'content-type': 'application/json', ...(options.headers || {}) };
   if (needsAdmin) headers['x-relay-admin'] = state.relay.adminKey;
   else if (state.relay.agentToken) headers.authorization = `Bearer ${state.relay.agentToken}`;
-  const response = await fetch(`${base}${route}`, { ...options, headers });
+  const response = await fetchWithTimeout(`${base}${route}`, { ...options, headers }, 30_000, 'The relay');
   const result = await response.json().catch(() => ({})); if (!response.ok) throw new Error(result.error || `Relay returned HTTP ${response.status}.`); return result;
 }
 async function reportAgentStatus() {
@@ -209,7 +218,7 @@ function weeklyTrackedSeconds() {
 async function telegram(method, params = {}) {
   const token = state.telegram.token;
   if (!token) throw new Error('Add your Telegram bot token first.');
-  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(params) });
+  const response = await fetchWithTimeout(`https://api.telegram.org/bot${token}/${method}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(params) }, 15_000, 'Telegram');
   const data = await response.json(); if (!data.ok) throw new Error(data.description || 'Telegram request failed'); return data.result;
 }
 async function telegramLoop() {
@@ -371,7 +380,14 @@ ipcMain.handle('email:send', async (_e, data) => {
   const tasks = state.tasks.map(t => `• ${t.title} — ${t.status} (${t.source})`).join('\n') || 'No tasks recorded.';
   await transport.sendMail({ from: user, to, subject: `Task Tracker report — ${new Date().toLocaleDateString()}`, text: `${state.profile.name || 'Team member'}\nTracked time: ${Math.floor(snapshot().tracking.activeSeconds / 3600)}h ${Math.floor(snapshot().tracking.activeSeconds % 3600 / 60)}m\n\n${tasks}` }); return true;
 });
-ipcMain.handle('telegram:save', async (_e, data) => { const token = String(data.token || '').trim(); if (!token) throw new Error('Paste a Telegram bot token.'); const response = await fetch(`https://api.telegram.org/bot${token}/getMe`); const result = await response.json(); if (!result.ok) throw new Error(result.description || 'Could not connect bot.'); state.telegram = { token, chatId: '', connected: false, botName: result.result.username, offset: 0, error: '' }; telegramOffset = 0; persist(); if (relayUrl() && state.relay.adminKey) await relayRequest('/admin/setup', { method: 'POST', body: JSON.stringify({ botToken: token }) }, true); else startTelegram(); publish(); return { botName: result.result.username }; });
+ipcMain.handle('telegram:save', async (_e, data) => {
+  const token = String(data.token || '').trim(); if (!token) throw new Error('Paste a Telegram bot token.');
+  const response = await fetchWithTimeout(`https://api.telegram.org/bot${token}/getMe`, {}, 15_000, 'Telegram');
+  const result = await response.json(); if (!result.ok) throw new Error(result.description || 'Could not connect bot.');
+  state.telegram = { token, chatId: '', connected: false, botName: result.result.username, offset: 0, error: '' }; telegramOffset = 0; persist();
+  if (relayUrl() && state.relay.adminKey) await relayRequest('/admin/setup', { method: 'POST', body: JSON.stringify({ botToken: token }) }, true); else startTelegram();
+  publish(); return { botName: result.result.username };
+});
 ipcMain.handle('telegram:pair', async () => { if (!state.telegram.token) throw new Error('Save a bot token first.'); const code = String(crypto.randomInt(100000, 999999)); pendingPair = { code, expiresAt: Date.now() + 10 * 60_000 }; return { code, botName: state.telegram.botName }; });
 ipcMain.handle('telegram:disconnect', () => { state.telegram = { token: '', chatId: '', connected: false, botName: '', offset: 0, error: '' }; telegramOffset = 0; pendingPair = null; persist(); publish(); return true; });
 ipcMain.handle('relay:configure', async (_e, input) => {

@@ -66,9 +66,17 @@ async function body(req) { let raw = ''; for await (const chunk of req) { raw +=
 function admin(req) { return !!ADMIN_TOKEN && secureEqual(req.headers['x-relay-admin'] || '', ADMIN_TOKEN); }
 function bearer(req) { return String(req.headers.authorization || '').replace(/^Bearer\s+/i, ''); }
 function agentFor(req) { const hash = tokenHash(bearer(req)); return db.members.find(member => member.deviceTokenHash && secureEqual(member.deviceTokenHash, hash)); }
+async function telegramFetch(url, options = {}) {
+  const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 10_000);
+  try { return await fetch(url, { ...options, signal: controller.signal }); }
+  catch (error) {
+    if (error.name === 'AbortError') throw new Error('Telegram did not respond within 10 seconds. Check Telegram API availability and try again.');
+    throw new Error(`Could not reach Telegram: ${error.message}`);
+  } finally { clearTimeout(timeout); }
+}
 async function tg(method, params = {}) {
   if (!db.botToken) throw new Error('Telegram bot is not configured on the relay.');
-  const response = await fetch(`https://api.telegram.org/bot${db.botToken}/${method}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(params) });
+  const response = await telegramFetch(`https://api.telegram.org/bot${db.botToken}/${method}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(params) });
   const result = await response.json(); if (!result.ok) throw new Error(result.description || 'Telegram API request failed.'); return result.result;
 }
 function publicMember(member) {
@@ -138,9 +146,9 @@ async function route(req, res) {
     if (req.method === 'POST' && url.pathname === '/admin/setup') {
       if (!PUBLIC_URL) return json(res, 500, { error: 'Set PUBLIC_URL to this relay’s HTTPS address before connecting Telegram.' });
       const input = await body(req); const botToken = String(input.botToken || '').trim(); if (!botToken) return json(res, 400, { error: 'Telegram bot token is required.' });
-      const whoResponse = await fetch(`https://api.telegram.org/bot${botToken}/getMe`); const who = await whoResponse.json(); if (!who.ok) return json(res, 400, { error: who.description || 'Invalid Telegram bot token.' });
+      const whoResponse = await telegramFetch(`https://api.telegram.org/bot${botToken}/getMe`); const who = await whoResponse.json(); if (!who.ok) return json(res, 400, { error: who.description || 'Invalid Telegram bot token.' });
       db.botToken = botToken; db.botName = who.result.username; db.webhookSecret = crypto.randomBytes(24).toString('hex');
-      const webhookResponse = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: `${PUBLIC_URL}/webhook/${db.webhookSecret}`, secret_token: db.webhookSecret, allowed_updates: ['message'], drop_pending_updates: false }) });
+      const webhookResponse = await telegramFetch(`https://api.telegram.org/bot${botToken}/setWebhook`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: `${PUBLIC_URL}/webhook/${db.webhookSecret}`, secret_token: db.webhookSecret, allowed_updates: ['message'], drop_pending_updates: false }) });
       const webhook = await webhookResponse.json(); if (!webhook.ok) return json(res, 502, { error: webhook.description || 'Could not configure Telegram webhook.' });
       saveDb(); return json(res, 200, { ok: true, botName: db.botName });
     }
