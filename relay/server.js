@@ -74,7 +74,7 @@ async function tg(method, params = {}) {
 function publicMember(member) {
   const { telegramId, chatId, inviteCode, deviceTokenHash, commands, ...safe } = member;
   const deviceOnline = !!member.lastHeartbeat && Date.now() - member.lastHeartbeat < 25_000;
-  return { ...safe, status: deviceOnline ? member.status : 'offline', invitePending: !!inviteCode, deviceOnline };
+  return { ...safe, status: deviceOnline ? member.status : 'offline', invitePending: !!inviteCode, deviceOnline, paired: !!deviceTokenHash };
 }
 function memberByTelegram(from) { return db.members.find(member => member.telegramId && String(member.telegramId) === String(from?.id)); }
 async function handleTelegramMessage(msg) {
@@ -98,7 +98,7 @@ async function handleTelegramMessage(msg) {
     const member = memberByTelegram(msg.from);
     if (!pair || !member || member.id !== pair.memberId) { await tg('sendMessage', { chat_id: chatId, text: 'That computer pairing link has expired or belongs to a different Telegram account. Generate a new link in Task Tracker.' }); return; }
     const agentToken = crypto.randomBytes(32).toString('base64url'); member.deviceTokenHash = tokenHash(agentToken); member.deviceId = pair.deviceId; member.lastHeartbeat = Date.now(); pair.agentToken = agentToken; pair.paired = true; saveDb();
-    await tg('sendMessage', { chat_id: chatId, text: 'This computer is now connected. Send /on to start its work timer and screenshot capture, or /off to stop them.' }); return;
+    await tg('sendMessage', { chat_id: chatId, text: 'Telegram authorization accepted. Keep Task Tracker open on the computer that generated this link; it will finish pairing and then show as connected. After that, use /on to start tracking or /off to stop.' }); return;
   }
 
   const member = memberByTelegram(msg.from);
@@ -169,7 +169,9 @@ async function route(req, res) {
   if (req.method === 'GET' && pairStatus) {
     const pair = db.pairs.find(item => item.code === pairStatus[1] && item.expiresAt > Date.now()); if (!pair) return json(res, 404, { error: 'Pairing link expired. Generate a new one.' });
     if (!pair.paired || !pair.agentToken) return json(res, 200, { pending: true });
-    const agentToken = pair.agentToken; pair.agentToken = ''; saveDb(); return json(res, 200, { pending: false, agentToken });
+    // Keep the short-lived pairing token available until the code expires so a
+    // desktop retry can recover if it missed the first HTTP response.
+    return json(res, 200, { pending: false, agentToken: pair.agentToken });
   }
   if (req.method === 'POST' && url.pathname === '/agent/poll') {
     const member = agentFor(req); if (!member) return json(res, 401, { error: 'This computer is not paired. Pair it again from Telegram settings.' });

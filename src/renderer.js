@@ -4,6 +4,7 @@ let appState;
 let currentFilter = 'All';
 let toastTimer;
 let workspaceStatusKey = '';
+let workspaceRefreshing = false;
 
 function ensureCaptureUi() {
   const captureToggle = $('#screenshots-toggle');
@@ -113,12 +114,18 @@ async function renderWorkspace() {
   const isAdmin = !!appState?.relay?.adminReady;
   $('#member-admin-note').hidden = isAdmin; $('#member-invite-help').hidden = !isAdmin; $('#member-admin-panel').hidden = !isAdmin; $('#member-list-heading').hidden = !isAdmin;
   if (!isAdmin) { $('#workspace-members').innerHTML = ''; $('#member-count').textContent = 'Administrator only'; return; }
-  const members = await window.tracker.listWorkspaceMembers(); const host = $('#workspace-members');
+  if (workspaceRefreshing) return;
+  workspaceRefreshing = true;
+  let members;
+  try { members = await window.tracker.listWorkspaceMembers(); }
+  catch (error) { $('#member-form-error').textContent = error.message; return; }
+  finally { workspaceRefreshing = false; }
+  const host = $('#workspace-members');
   $('#member-count').textContent = `${members.length} ${members.length === 1 ? 'person' : 'people'}`;
   host.innerHTML = members.map(member => {
     const initial = escapeHtml((member.name || '?').trim()[0] || '?'); const pending = member.status === 'pending' || member.invitePending;
     const statusLabel = pending ? 'Invite pending' : member.status === 'online' ? 'Online' : 'Offline';
-    const seen = member.status === 'online' ? 'Active now' : pending ? 'Waiting for invite acceptance' : member.deviceOnline === false ? 'Computer not connected' : member.lastSeen ? `Last active ${new Date(member.lastSeen).toLocaleString()}` : 'Not tracking';
+    const seen = member.status === 'online' ? 'Active now' : pending ? 'Waiting for invite acceptance' : member.deviceOnline === false ? (member.paired ? 'Computer paired · Task Tracker is not running' : 'Computer not paired') : member.lastSeen ? `Last active ${new Date(member.lastSeen).toLocaleString()}` : 'Not tracking';
     const hours = Math.floor(member.totalSeconds / 3600); const minutes = Math.floor(member.totalSeconds % 3600 / 60);
     return `<article class="member-card"><div class="member-card-top"><div class="member-avatar-wrap">${member.photo ? `<img class="member-photo" src="${member.photo}" alt="${escapeHtml(member.name)}">` : `<div class="member-avatar">${initial}</div>`}<span class="member-presence ${member.status === 'online' ? 'online' : pending ? 'pending' : ''}"></span></div><div class="member-main"><b>${escapeHtml(member.name)}${member.isOwner ? ' <span class="owner-label">YOU</span>' : ''}</b><small>${member.isOwner ? 'Workspace owner' : `Telegram · @${escapeHtml(member.telegramUsername || 'username unavailable')}`}</small></div><span class="member-status ${member.status}">${statusLabel}</span></div><div class="member-detail"><span>${seen}</span><span>${hours}h ${String(minutes).padStart(2, '0')}m tracked</span></div>${member.isOwner ? '' : `<div class="member-actions">${pending ? `<button class="text-link" data-invite="${member.id}">Copy invite link →</button>` : '<span class="member-linked">Telegram connected</span>'}<button class="member-delete" data-remove-member="${member.id}" title="Remove person">Delete</button></div>`}</article>`;
   }).join('') || '<div class="empty-state show"><div class="empty-illustration">♧</div><h3>Your team starts here.</h3><p>Add a teammate with their Telegram username to invite them.</p></div>';
@@ -308,5 +315,6 @@ $$('.suggestion').forEach(button => button.addEventListener('click', async () =>
 $('#top-date').textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
 $('#footer-date').textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 window.tracker.onUpdate(render);
+setInterval(() => { if ($('#view-workspace')?.classList.contains('active') && appState?.relay?.adminReady) renderWorkspace(); }, 5000);
 window.tracker.onCapture(notice => { if (notice.phase === 'started') toast('Screenshot capture is starting now.'); else { if ($('#view-screenshots').classList.contains('active')) renderScreenshots(); toast('A screenshot was saved to your private work journal.'); } });
 window.tracker.getState().then(state => { render(state); if (!state.profile.name) openModal('register-modal'); }).catch(err => toast(err.message));
