@@ -186,7 +186,13 @@ async function route(req, res) {
   }
   if (req.method === 'POST' && url.pathname === '/agent/poll') {
     const member = agentFor(req); if (!member) return json(res, 401, { error: 'This computer is not paired. Pair it again from Telegram settings.' });
-    member.lastHeartbeat = Date.now(); const commands = member.commands.splice(0, 50); saveDb(); return json(res, 200, { commands, status: member.status });
+    member.lastHeartbeat = Date.now(); member.commands ||= []; const commands = member.commands.slice(0, 50); saveDb(); return json(res, 200, { commands, status: member.status });
+  }
+  if (req.method === 'POST' && url.pathname === '/agent/ack') {
+    const member = agentFor(req); if (!member) return json(res, 401, { error: 'This computer is not paired.' });
+    const input = await body(req); const ids = new Set(Array.isArray(input.commandIds) ? input.commandIds.map(String) : []);
+    member.commands = (member.commands || []).filter(command => !ids.has(String(command.id)));
+    member.lastHeartbeat = Date.now(); saveDb(); return json(res, 200, { ok: true });
   }
   if (req.method === 'POST' && url.pathname === '/agent/status') {
     const member = agentFor(req); if (!member) return json(res, 401, { error: 'This computer is not paired.' });

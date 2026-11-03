@@ -83,11 +83,17 @@ async function pollAgentRelay() {
   relayBusy = true;
   try {
     const result = await relayRequest('/agent/poll', { method: 'POST', body: '{}' });
+    const completed = [];
     for (const command of result.commands || []) {
-      if (command.action === 'start') startTracking();
-      else if (command.action === 'stop') stopTracking();
-      else if (command.action === 'task') addTask(command.title, '', 'Telegram');
+      try {
+        if (command.action === 'start') startTracking();
+        else if (command.action === 'stop') stopTracking();
+        else if (command.action === 'task') addTask(command.title, '', 'Telegram', command.id);
+        else { completed.push(command.id); continue; }
+        completed.push(command.id);
+      } catch (error) { console.error(`Could not apply Telegram command ${command.id}:`, error.message); }
     }
+    if (completed.length) await relayRequest('/agent/ack', { method: 'POST', body: JSON.stringify({ commandIds: completed }) });
   } catch (err) { if (err.message !== 'fetch failed') console.warn('Relay agent polling:', err.message); }
   finally { relayBusy = false; }
 }
@@ -141,9 +147,10 @@ function stopTracking() {
   if (durationSeconds > 0) state.sessions.unshift({ startedAt: state.tracking.since, endedAt: new Date().toISOString(), durationSeconds, memberId: 'owner' });
   state.tracking.active = false; state.tracking.since = null; sessionStartedAt = null; persist(); stopCapture(); publish(); reportAgentStatus(); return snapshot();
 }
-function addTask(title, note = '', source = 'Desktop') {
+function addTask(title, note = '', source = 'Desktop', relayCommandId = '') {
   title = String(title || '').trim().slice(0, 180); if (!title) return null;
-  const task = { id: crypto.randomUUID(), title, note: String(note || '').trim().slice(0, 1000), status: 'In progress', source, createdAt: new Date().toISOString(), completedAt: null };
+  if (relayCommandId) { const previous = state.tasks.find(item => item.relayCommandId === relayCommandId); if (previous) return previous; }
+  const task = { id: crypto.randomUUID(), title, note: String(note || '').trim().slice(0, 1000), status: 'In progress', source, createdAt: new Date().toISOString(), completedAt: null, ...(relayCommandId ? { relayCommandId } : {}) };
   state.tasks.unshift(task); persist(); publish(); return task;
 }
 
