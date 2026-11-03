@@ -156,6 +156,15 @@ async function route(req, res) {
       else member.inviteCode = '';
       member.commands ||= []; saveDb(); return json(res, 200, { member: publicMember(member), inviteLink: member.inviteCode ? `https://t.me/${db.botName}?start=${member.inviteCode}` : '' });
     }
+    const invite = url.pathname.match(/^\/admin\/members\/([^/]+)\/invite$/);
+    if (req.method === 'POST' && invite) {
+      const member = db.members.find(item => item.id === decodeURIComponent(invite[1]));
+      if (!member) return json(res, 404, { error: 'Workspace member not found on the relay. Re-add or sync this person first.' });
+      if (member.telegramId) return json(res, 409, { error: 'This Telegram account already accepted its workspace invite. Generate a computer link from the desktop app instead.' });
+      if (!db.botName) return json(res, 409, { error: 'Connect the workspace bot to the relay before creating invites.' });
+      member.inviteCode = `dm_${crypto.randomBytes(8).toString('hex')}`; saveDb();
+      return json(res, 200, { inviteCode: member.inviteCode, inviteLink: `https://t.me/${db.botName}?start=${member.inviteCode}` });
+    }
     const remove = url.pathname.match(/^\/admin\/members\/([^/]+)$/);
     if (req.method === 'DELETE' && remove) { db.members = db.members.filter(member => member.id !== decodeURIComponent(remove[1])); saveDb(); return json(res, 200, { ok: true }); }
     return json(res, 404, { error: 'Unknown admin route.' });

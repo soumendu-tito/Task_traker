@@ -319,7 +319,18 @@ ipcMain.handle('workspace:add-member', async (_e, data) => {
   }
   return { id: member.id, name: member.name, telegramUsername: member.telegramUsername, botName: state.telegram.botName, inviteCode: member.inviteCode, inviteLink: member.inviteCode && state.telegram.botName ? `https://t.me/${state.telegram.botName}?start=${member.inviteCode}` : '' };
 });
-ipcMain.handle('workspace:copy-invite', (_e, id) => { if (!state.relay.adminReady) throw new Error('Only the workspace administrator can manage invites.'); const member = state.members.find(item => item.id === id); if (!member?.inviteCode || !state.telegram.botName) return false; clipboard.writeText(`https://t.me/${state.telegram.botName}?start=${member.inviteCode}`); return true; });
+ipcMain.handle('workspace:copy-invite', async (_e, id) => {
+  if (!state.relay.adminReady) throw new Error('Only the workspace administrator can manage invites.');
+  if (relayUrl() && state.relay.adminKey) {
+    const result = await relayRequest(`/admin/members/${encodeURIComponent(id)}/invite`, { method: 'POST', body: '{}' }, true);
+    const localMember = state.members.find(item => item.id === id);
+    if (localMember) { localMember.inviteCode = result.inviteCode; persist(); }
+    clipboard.writeText(result.inviteLink); return true;
+  }
+  const member = state.members.find(item => item.id === id);
+  if (!member?.inviteCode || !state.telegram.botName) return false;
+  clipboard.writeText(`https://t.me/${state.telegram.botName}?start=${member.inviteCode}`); return true;
+});
 ipcMain.handle('workspace:remove-member', async (_e, id) => { if (!state.relay.adminReady) throw new Error('Only the workspace administrator can remove people.'); const member = state.members.find(item => item.id === id); if (member?.status === 'online') memberStop(member); state.members = state.members.filter(item => item.id !== id); persist(); publish(); if (relayUrl() && state.relay.adminKey) await relayRequest(`/admin/members/${encodeURIComponent(id)}`, { method: 'DELETE' }, true); return true; });
 ipcMain.handle('profile:save', (_e, profile) => { state.profile = { ...state.profile, name: String(profile.name || '').trim(), email: String(profile.email || '').trim(), role: String(profile.role || 'Team member').trim() }; persist(); publish(); return snapshot(); });
 ipcMain.handle('preferences:set', (_e, prefs) => { state.preferences = { ...state.preferences, ...prefs, screenshots: true, intervalMinutes: 5 }; persist(); startCapture(); publish(); return snapshot(); });
