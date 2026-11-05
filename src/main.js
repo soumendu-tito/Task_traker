@@ -502,16 +502,25 @@ ipcMain.handle('relay:verify-admin', async (_e, input) => {
 ipcMain.handle('relay:save-agent-settings', (_e, input) => {
   const url = normalizeRelayUrl(input?.url || state.relay.url); const username = String(input?.username || '').trim().replace(/^@/, '');
   if (!/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(username)) throw new Error('Enter a valid Telegram username.');
+  if (normalizeTelegramUsername(username) !== normalizeTelegramUsername(state.relay.username)) {
+    state.relay.agentToken = ''; state.relay.pendingCode = ''; state.relay.connectionError = ''; state.telegram.connected = false;
+    if (telegramTimer) { clearInterval(telegramTimer); telegramTimer = null; }
+    if (relayPairTimer) { clearInterval(relayPairTimer); relayPairTimer = null; }
+  }
   state.relay.url = url; state.relay.username = username; persist(); return true;
 });
 ipcMain.handle('relay:copy-text', (_e, value) => { clipboard.writeText(String(value || '')); return true; });
 ipcMain.handle('relay:pair-device', async (_e, input) => {
   if (input?.url || input?.username) { const url = normalizeRelayUrl(input.url || state.relay.url); const username = String(input.username || state.relay.username).trim().replace(/^@/, ''); state.relay.url = url; state.relay.username = username; }
   if (!/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(state.relay.username)) throw new Error('Enter a valid Telegram username.');
+  state.relay.agentToken = ''; state.relay.pendingCode = ''; state.relay.connectionError = ''; state.telegram.connected = false;
+  if (telegramTimer) { clearInterval(telegramTimer); telegramTimer = null; }
+  if (relayPairTimer) { clearInterval(relayPairTimer); relayPairTimer = null; }
+  persist(); publish();
   const health = await relayRequest('/health');
   if (health.pairingProtocolVersion !== 2) throw new Error('The Render relay is outdated. Deploy the latest relay/server.js and wait for Render to finish before generating a new computer link.');
   const result = await relayRequest('/agent/pair', { method: 'POST', body: JSON.stringify({ username: state.relay.username, deviceId: state.relay.deviceId, profileName: state.profile.name }) });
-  state.relay.agentToken = ''; state.relay.pendingCode = result.code; state.relay.connectionError = ''; state.telegram.connected = false; state.telegram.botName = result.botName; persist(); publish();
+  state.relay.pendingCode = result.code; state.telegram.botName = result.botName; persist(); publish();
   if (relayPairTimer) clearInterval(relayPairTimer); relayPairTimer = setInterval(checkRelayPair, 2500); checkRelayPair();
   return result;
 });
