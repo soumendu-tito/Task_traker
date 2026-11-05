@@ -52,6 +52,8 @@ The relay is required when Telegram commands must control tracking and screensho
 4. Each teammate installs and opens the desktop app. They do not need the relay admin token or bot token. In **Telegram connection**, enter the relay URL and their Telegram username, choose **Generate computer link**, then open the link in Telegram and press **Start**.
 5. The paired app must stay running. Telegram `/on`, `/online`, or `on` starts that computer's timer and required screen captures. `/off`, `/offline`, `/break`, or `off` stops them. Commands sent while the app is offline are queued until it reconnects.
 
+To post tracker status in a Telegram group, add the connected bot to the group and send `/setgroup` there from a Telegram account linked to the workspace. Starting tracking posts `Name: ON`; pausing posts `Name: Off`. The dashboard and workspace member totals show time for the current local calendar day and reset at midnight; daily and weekly reports continue to use the saved work sessions.
+
 Use the same bot token only through the relay after setup; the relay switches it to Telegram webhooks. Keep the admin token private. The relay stores Telegram IDs, workspace usernames, online state, and queued commands in its persistent data file. Screenshots remain on each user's computer.
 
 ### Render setup

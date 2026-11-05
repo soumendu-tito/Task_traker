@@ -13,7 +13,7 @@ const DB_FILE = path.join(DATA_DIR, 'relay.json');
 const DB_BACKUP_FILE = `${DB_FILE}.bak`;
 let db;
 
-function blankDb() { return { botToken: '', botName: '', webhookSecret: '', members: [], pairs: [], offset: 0, processedUpdates: [] }; }
+function blankDb() { return { botToken: '', botName: '', webhookSecret: '', groupChatId: '', members: [], pairs: [], offset: 0, processedUpdates: [] }; }
 function saveDb() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const tmp = `${DB_FILE}.tmp`;
@@ -112,6 +112,10 @@ async function handleTelegramMessage(msg) {
   }
 
   const member = memberByTelegram(msg.from);
+  if (command === '/setgroup' && member && ['group', 'supergroup'].includes(msg.chat.type)) {
+    db.groupChatId = chatId; saveDb();
+    await tg('sendMessage', { chat_id: chatId, text: '✅ Task Tracker status announcements are enabled in this group. Start tracking to post ON; pause to post Off.' }); return;
+  }
   if (!member || member.chatId !== chatId) {
     if (command === '/start' || command === 'start') await tg('sendMessage', { chat_id: chatId, text: 'Ask your workspace owner for an invite link first.' });
     return;
@@ -198,7 +202,12 @@ async function route(req, res) {
   }
   if (req.method === 'POST' && url.pathname === '/agent/poll') {
     const member = agentFor(req); if (!member) return json(res, 401, { error: 'This computer pairing is no longer active. Generate a fresh computer link; a newer pairing may have replaced it.' });
-    member.lastHeartbeat = Date.now(); member.commands ||= []; const commands = member.commands.slice(0, 50); saveDb(); return json(res, 200, { commands, status: member.status });
+    const input = await body(req); member.lastHeartbeat = Date.now(); member.commands ||= [];
+    if (input.dayKey && Number.isFinite(input.totalSeconds)) {
+      if (member.totalDayKey !== String(input.dayKey)) { member.totalDayKey = String(input.dayKey); member.totalSeconds = 0; }
+      member.totalSeconds = Math.max(0, Math.floor(input.totalSeconds));
+    }
+    const commands = member.commands.slice(0, 50); saveDb(); return json(res, 200, { commands, status: member.status });
   }
   if (req.method === 'POST' && url.pathname === '/agent/ack') {
     const member = agentFor(req); if (!member) return json(res, 401, { error: 'This computer is not paired.' });
@@ -210,8 +219,16 @@ async function route(req, res) {
     const member = agentFor(req); if (!member) return json(res, 401, { error: 'This computer is not paired.' });
     const input = await body(req); member.lastHeartbeat = Date.now(); member.deviceOnline = true;
     if (typeof input.online === 'boolean') { member.status = input.online ? 'online' : 'offline'; member.statusSince = input.online ? (member.statusSince || Date.now()) : null; }
-    if (Number.isFinite(input.totalSeconds)) member.totalSeconds = Math.max(member.totalSeconds || 0, input.totalSeconds);
-    saveDb(); return json(res, 200, { ok: true });
+    if (input.dayKey && Number.isFinite(input.totalSeconds)) {
+      if (member.totalDayKey !== String(input.dayKey)) { member.totalDayKey = String(input.dayKey); member.totalSeconds = 0; }
+      member.totalSeconds = Math.max(0, Math.floor(input.totalSeconds));
+    }
+    saveDb();
+    if (input.announce === true && db.groupChatId && typeof input.online === 'boolean') {
+      try { await tg('sendMessage', { chat_id: db.groupChatId, text: `${String(input.displayName || member.name || 'Workspace member').slice(0, 100)}: ${input.online ? 'ON' : 'Off'}` }); }
+      catch (error) { console.warn('Could not announce tracker status to Telegram group:', error.message); }
+    }
+    return json(res, 200, { ok: true });
   }
   return json(res, 404, { error: 'Not found.' });
 }

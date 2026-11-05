@@ -61,7 +61,8 @@ function load() {
   persist();
 }
 function snapshot() {
-  return { ...state, tracking: { ...state.tracking, activeSeconds: state.tracking.totalSeconds + (sessionStartedAt ? Math.floor((Date.now() - sessionStartedAt) / 1000) : 0) } };
+  const { start, end } = dayBounds();
+  return { ...state, tracking: { ...state.tracking, activeSeconds: trackedSecondsForRange(start, end) } };
 }
 function publish() { if (win && !win.isDestroyed()) win.webContents.send('state:update', snapshot()); }
 function relayUrl() { return String(state.relay?.url || '').trim().replace(/\/$/, ''); }
@@ -82,9 +83,10 @@ async function relayRequest(route, options = {}, needsAdmin = false) {
   const response = await fetchWithTimeout(`${base}${route}`, { ...options, headers }, 30_000, 'The relay');
   const result = await response.json().catch(() => ({})); if (!response.ok) throw new Error(result.error || `Relay returned HTTP ${response.status}.`); return result;
 }
-async function reportAgentStatus() {
+async function reportAgentStatus(announce = false) {
   if (!state?.relay?.agentToken || !relayUrl()) return;
-  try { await relayRequest('/agent/status', { method: 'POST', body: JSON.stringify({ online: state.tracking.active, totalSeconds: snapshot().tracking.activeSeconds }) }); }
+  const now = new Date(); const dayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  try { await relayRequest('/agent/status', { method: 'POST', body: JSON.stringify({ online: state.tracking.active, totalSeconds: snapshot().tracking.activeSeconds, dayKey, announce, displayName: state.profile.name || state.relay.username || 'A workspace member' }) }); }
   catch (err) { console.warn('Relay status update:', err.message); invalidateAgentPairing(err); }
 }
 function invalidateAgentPairing(error) {
@@ -99,7 +101,8 @@ async function pollAgentRelay() {
   if (relayBusy || !state?.relay?.agentToken || !relayUrl()) return;
   relayBusy = true;
   try {
-    const result = await relayRequest('/agent/poll', { method: 'POST', body: '{}' });
+    const now = new Date(); const dayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const result = await relayRequest('/agent/poll', { method: 'POST', body: JSON.stringify({ totalSeconds: snapshot().tracking.activeSeconds, dayKey }) });
     const completed = [];
     for (const command of result.commands || []) {
       try {
@@ -123,6 +126,11 @@ function createWindow() {
   win.once('ready-to-show', () => win.show());
 }
 function stopCapture() { if (captureTimer) clearInterval(captureTimer); captureTimer = null; }
+function announceLocalTelegramStatus(online) {
+  if (state.relay.agentToken || !state.telegram.groupChatId || !state.telegram.token) return;
+  telegram('sendMessage', { chat_id: state.telegram.groupChatId, text: `${state.profile.name || 'Workspace member'}: ${online ? 'ON' : 'Off'}` })
+    .catch(error => console.warn('Could not announce tracker status to Telegram group:', error.message));
+}
 function startCapture() {
   stopCapture();
   if (!state.tracking.active) return;
@@ -156,14 +164,14 @@ async function captureScreen() {
 }
 function startTracking() {
   if (state.tracking.active) return snapshot();
-  sessionStartedAt = Date.now(); state.tracking.active = true; state.tracking.since = new Date().toISOString(); persist(); startCapture(); publish(); reportAgentStatus(); return snapshot();
+  sessionStartedAt = Date.now(); state.tracking.active = true; state.tracking.since = new Date().toISOString(); persist(); startCapture(); publish(); reportAgentStatus(true); announceLocalTelegramStatus(true); return snapshot();
 }
 function stopTracking() {
   if (!state.tracking.active) return snapshot();
   const durationSeconds = sessionStartedAt ? Math.floor((Date.now() - sessionStartedAt) / 1000) : 0;
   state.tracking.totalSeconds += durationSeconds;
   if (durationSeconds > 0) state.sessions.unshift({ startedAt: state.tracking.since, endedAt: new Date().toISOString(), durationSeconds, memberId: 'owner' });
-  state.tracking.active = false; state.tracking.since = null; sessionStartedAt = null; persist(); stopCapture(); publish(); reportAgentStatus(); return snapshot();
+  state.tracking.active = false; state.tracking.since = null; sessionStartedAt = null; persist(); stopCapture(); publish(); reportAgentStatus(true); announceLocalTelegramStatus(false); return snapshot();
 }
 function addTask(title, note = '', source = 'Desktop', relayCommandId = '') {
   title = String(title || '').trim().slice(0, 180); if (!title) return null;
@@ -207,10 +215,20 @@ async function saveMemberPhoto(member) {
     const destination = path.join(dir, `${member.id}${ext}`); fs.writeFileSync(destination, Buffer.from(await response.arrayBuffer())); member.photoFile = destination; persist(); publish();
   } catch (err) { console.warn('Could not fetch Telegram profile photo:', err.message); }
 }
+function memberTrackedSecondsForRange(member, start, end) {
+  const sessions = [...(member.sessions || [])];
+  if (member.status === 'online' && member.startedAt) sessions.push({ startedAt: new Date(member.startedAt).toISOString(), endedAt: new Date().toISOString() });
+  return sessions.reduce((sum, session) => {
+    const from = Math.max(start.getTime(), new Date(session.startedAt).getTime());
+    const to = Math.min(end.getTime(), new Date(session.endedAt).getTime());
+    return sum + Math.max(0, Math.floor((to - from) / 1000));
+  }, 0);
+}
 function workspaceMembers() {
-  const activeSeconds = state.tracking.totalSeconds + (sessionStartedAt ? Math.floor((Date.now() - sessionStartedAt) / 1000) : 0);
+  const { start, end } = dayBounds();
+  const activeSeconds = trackedSecondsForRange(start, end);
   const owner = { id: 'owner', name: state.profile.name || 'Workspace owner', telegramId: '', status: state.tracking.active ? 'online' : 'offline', lastSeen: null, totalSeconds: activeSeconds, isOwner: true, photo: '' };
-  return [owner, ...state.members.map(member => ({ ...member, totalSeconds: member.totalSeconds + (member.status === 'online' && member.startedAt ? Math.floor((Date.now() - member.startedAt) / 1000) : 0), photo: member.photoFile && fs.existsSync(member.photoFile) ? `data:${member.photoFile.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg'};base64,${fs.readFileSync(member.photoFile).toString('base64')}` : '' }))];
+  return [owner, ...state.members.map(member => ({ ...member, totalSeconds: memberTrackedSecondsForRange(member, start, end), photo: member.photoFile && fs.existsSync(member.photoFile) ? `data:${member.photoFile.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg'};base64,${fs.readFileSync(member.photoFile).toString('base64')}` : '' }))];
 }
 function weekBounds(date = new Date()) { const start = new Date(date); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - ((start.getDay() + 6) % 7)); const end = new Date(start); end.setDate(end.getDate() + 7); return { start, end }; }
 function dayBounds(date = new Date()) { const start = new Date(date); start.setHours(0, 0, 0, 0); const end = new Date(start); end.setDate(end.getDate() + 1); return { start, end }; }
@@ -284,8 +302,14 @@ async function telegramLoop() {
         state.telegram.chatId = chatId; state.telegram.ownerUserId = String(msg.from?.id || ''); state.telegram.connected = true; pendingPair = null; persist(); publish();
         await telegram('sendMessage', { chat_id: chatId, text: 'Connected to Task Tracker. Commands: /on or /online, /off or /break, /task Your task, /status, /help' }); continue;
       }
-      const command = parts[0].toLowerCase().replace(/@[^@]+$/, ''); const member = state.members.find(item => item.chatId === chatId);
+      const command = parts[0].toLowerCase().replace(/@[^@]+$/, '');
+      const linkedMember = state.members.find(item => String(item.telegramId || '') === String(msg.from?.id || ''));
+      const member = state.members.find(item => item.chatId === chatId);
       const isOwner = state.telegram.connected && chatId === String(state.telegram.chatId);
+      if (command === '/setgroup' && ['group', 'supergroup'].includes(msg.chat.type) && (isOwner || String(state.telegram.ownerUserId || '') === String(msg.from?.id || '') || linkedMember)) {
+        state.telegram.groupChatId = chatId; persist();
+        await telegram('sendMessage', { chat_id: chatId, text: '✅ Task Tracker status announcements are enabled in this group. Start tracking to post ON; pause to post Off.' }); continue;
+      }
       if (!member && !isOwner) {
         if (command === '/start' || command === 'start') await telegram('sendMessage', { chat_id: chatId, text: 'Ask your workspace owner to add your Telegram ID and send you a workspace invite link.' });
         continue;
@@ -302,7 +326,7 @@ async function telegramLoop() {
         if (!taskText) await telegram('sendMessage', { chat_id: chatId, text: 'Try: /task Prepare the weekly report' });
         else { addTask(taskText, '', `Telegram · ${displayName}`); await telegram('sendMessage', { chat_id: chatId, text: `Task saved: ${taskText}` }); }
       } else if (command === '/status') {
-        const seconds = member ? member.totalSeconds + (member.status === 'online' && member.startedAt ? Math.floor((Date.now() - member.startedAt) / 1000) : 0) : snapshot().tracking.activeSeconds;
+        const { start, end } = dayBounds(); const seconds = member ? memberTrackedSecondsForRange(member, start, end) : snapshot().tracking.activeSeconds;
         const online = member ? member.status === 'online' : state.tracking.active;
         await telegram('sendMessage', { chat_id: chatId, text: `${online ? 'Online' : 'Offline'} · Today ${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m` });
       } else await telegram('sendMessage', { chat_id: chatId, text: 'Commands: /on or /online, /off or /break, /task Your task, /status, /help' });
@@ -464,7 +488,7 @@ ipcMain.handle('assistant:ask', (_e, question) => {
   const q = String(question || '').trim().toLowerCase(); const open = state.tasks.filter(t => t.status !== 'Completed');
   if (/help|what can|command/.test(q)) return 'I can summarize your work, show open tasks and explain Telegram commands. Try “show my open tasks” or use /task, /online and /break in Telegram.';
   if (/task|todo|open|pending/.test(q)) return open.length ? `You have ${open.length} open task${open.length === 1 ? '' : 's'}: ${open.slice(0, 5).map(t => t.title).join('; ')}${open.length > 5 ? '; and more' : ''}.` : 'You have no open tasks. Nice work!';
-  if (/time|hour|worked|today/.test(q)) { const s = snapshot().tracking.activeSeconds; return `You have tracked ${Math.floor(s / 3600)} hours, ${Math.floor(s % 3600 / 60)} minutes and ${s % 60} seconds in this session${state.tracking.active ? ', which is still running' : ''}.`; }
+  if (/time|hour|worked|today/.test(q)) { const s = snapshot().tracking.activeSeconds; return `You have tracked ${Math.floor(s / 3600)} hours, ${Math.floor(s % 3600 / 60)} minutes and ${s % 60} seconds today${state.tracking.active ? ', and the timer is still running' : ''}.`; }
   if (/done|complete/.test(q)) return `${state.tasks.filter(t => t.status === 'Completed').length} tasks completed so far. Keep marking tasks complete as you go.`;
   return 'I’m your local task helper. Ask me about your open tasks, completed work or tracked time. You can also add a task from the Tasks tab.';
 });
