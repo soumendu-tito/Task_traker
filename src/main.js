@@ -105,7 +105,7 @@ async function reportAgentStatus(announce = false) {
       if (message && win && !win.isDestroyed()) win.webContents.send('telegram:notice', { message });
     }
   }
-  catch (err) { console.warn('Relay status update:', err.message); invalidateAgentPairing(err); }
+  catch (err) { console.warn('Relay status update:', err.message); if (invalidateAgentPairing(err)) await explainRelayPairVersion(); }
 }
 function invalidateAgentPairing(error) {
   if (!/not paired|pairing is no longer active|pairing identity mismatch/i.test(String(error?.message || ''))) return false;
@@ -115,6 +115,15 @@ function invalidateAgentPairing(error) {
   persist(); publish();
   if (telegramTimer) { clearInterval(telegramTimer); telegramTimer = null; }
   return true;
+}
+async function explainRelayPairVersion() {
+  try {
+    const health = await relayRequest('/health');
+    if (health.pairingProtocolVersion !== 2) {
+      state.relay.connectionError = 'The Render relay is outdated. Deploy the latest relay/server.js, wait for Render to finish, then generate a new computer link.';
+      persist(); publish();
+    }
+  } catch { /* Keep the original pairing error if the relay health check is unavailable. */ }
 }
 async function pollAgentRelay() {
   if (relayBusy || !state?.relay?.agentToken || !relayUrl()) return;
@@ -139,7 +148,7 @@ async function pollAgentRelay() {
     }
     if (completed.length) await relayRequest('/agent/ack', { method: 'POST', body: JSON.stringify({ commandIds: completed }) });
     if (state.relay.connectionError) { state.relay.connectionError = ''; persist(); publish(); }
-  } catch (err) { if (err.message !== 'fetch failed') console.warn('Relay agent polling:', err.message); invalidateAgentPairing(err); }
+  } catch (err) { if (err.message !== 'fetch failed') console.warn('Relay agent polling:', err.message); if (invalidateAgentPairing(err)) await explainRelayPairVersion(); }
   finally { relayBusy = false; }
 }
 function startAgentRelay() { if (telegramTimer) clearInterval(telegramTimer); telegramTimer = setInterval(pollAgentRelay, 2500); pollAgentRelay(); }
@@ -499,6 +508,8 @@ ipcMain.handle('relay:copy-text', (_e, value) => { clipboard.writeText(String(va
 ipcMain.handle('relay:pair-device', async (_e, input) => {
   if (input?.url || input?.username) { const url = normalizeRelayUrl(input.url || state.relay.url); const username = String(input.username || state.relay.username).trim().replace(/^@/, ''); state.relay.url = url; state.relay.username = username; }
   if (!/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(state.relay.username)) throw new Error('Enter a valid Telegram username.');
+  const health = await relayRequest('/health');
+  if (health.pairingProtocolVersion !== 2) throw new Error('The Render relay is outdated. Deploy the latest relay/server.js and wait for Render to finish before generating a new computer link.');
   const result = await relayRequest('/agent/pair', { method: 'POST', body: JSON.stringify({ username: state.relay.username, deviceId: state.relay.deviceId, profileName: state.profile.name }) });
   state.relay.agentToken = ''; state.relay.pendingCode = result.code; state.relay.connectionError = ''; state.telegram.connected = false; state.telegram.botName = result.botName; persist(); publish();
   if (relayPairTimer) clearInterval(relayPairTimer); relayPairTimer = setInterval(checkRelayPair, 2500); checkRelayPair();
@@ -509,7 +520,12 @@ async function checkRelayPair() {
   try {
     const result = await relayRequest(`/agent/pair/${encodeURIComponent(state.relay.pendingCode)}`);
     if (!result.pending && result.agentToken) { state.relay.agentToken = result.agentToken; state.relay.pendingCode = ''; state.relay.connectionError = ''; state.telegram.connected = true; persist(); publish(); if (relayPairTimer) clearInterval(relayPairTimer); relayPairTimer = null; startAgentRelay(); }
-  } catch (err) { if (err.message.includes('expired')) { state.relay.pendingCode = ''; persist(); publish(); if (relayPairTimer) clearInterval(relayPairTimer); relayPairTimer = null; } }
+  } catch (err) {
+    if (/expired|superseded|newer computer link/i.test(err.message)) {
+      state.relay.pendingCode = ''; state.relay.connectionError = err.message; persist(); publish();
+      if (relayPairTimer) clearInterval(relayPairTimer); relayPairTimer = null;
+    }
+  }
 }
 ipcMain.handle('assistant:ask', (_e, question) => {
   const q = String(question || '').trim().toLowerCase(); const open = state.tasks.filter(t => t.status !== 'Completed');

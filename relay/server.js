@@ -112,7 +112,9 @@ async function handleTelegramMessage(msg) {
     const duplicateAccount = membersByTelegramId(telegramId).find(item => item.id !== member?.id);
     if (!pair || !member || duplicateAccount || (member.telegramId ? String(member.telegramId) !== telegramId : !usernameMatches)) { await tg('sendMessage', { chat_id: chatId, text: duplicateAccount ? `This Telegram account is linked to multiple workspace people. Ask the owner to remove the duplicate member before pairing.` : 'That computer link is expired, belongs to another Telegram account, or your username has not been added to this workspace. Ask the workspace owner to confirm your username and generate a fresh link.' }); return; }
     if (!member.telegramId) { member.telegramId = telegramId; member.chatId = chatId; member.inviteCode = ''; member.status = 'offline'; member.lastSeen = Date.now(); }
-    const agentToken = crypto.randomBytes(32).toString('base64url'); member.deviceTokenHash = tokenHash(agentToken); member.deviceId = pair.deviceId; member.lastHeartbeat = Date.now(); pair.agentToken = agentToken; pair.paired = true; saveDb();
+    const agentToken = crypto.randomBytes(32).toString('base64url');
+    for (const otherPair of db.pairs) if (otherPair.memberId === member.id && otherPair.code !== pair.code) { otherPair.agentToken = ''; otherPair.paired = false; }
+    member.deviceTokenHash = tokenHash(agentToken); member.deviceId = pair.deviceId; member.lastHeartbeat = Date.now(); pair.agentToken = agentToken; pair.paired = true; saveDb();
     await tg('sendMessage', { chat_id: chatId, text: `Telegram authorization accepted for ${member.name} (@${member.telegramUsername}). Keep Task Tracker open on ${member.name}’s computer; it will finish pairing and then show as connected. After that, use /on to start tracking or /off to stop.` }); return;
   }
 
@@ -147,7 +149,7 @@ async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (req.method === 'OPTIONS') return json(res, 204, {});
   if (req.method === 'GET' && url.pathname === '/') return json(res, 200, { ok: true, service: 'task-tracker-relay', message: 'Relay is running. Use /health for the health check.' });
-  if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, service: 'task-tracker-relay', databasePresent: fs.existsSync(DB_FILE), backupPresent: fs.existsSync(DB_BACKUP_FILE), persistentDataDirConfigured: !!process.env.DATA_DIR });
+  if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ok: true, service: 'task-tracker-relay', pairingProtocolVersion: 2, databasePresent: fs.existsSync(DB_FILE), backupPresent: fs.existsSync(DB_BACKUP_FILE), persistentDataDirConfigured: !!process.env.DATA_DIR });
   if (req.method === 'POST' && url.pathname.startsWith('/webhook/')) {
     if (!db.webhookSecret || url.pathname !== `/webhook/${db.webhookSecret}` || !secureEqual(req.headers['x-telegram-bot-api-secret-token'] || '', db.webhookSecret)) return json(res, 401, { error: 'Unauthorized webhook.' });
     const update = await body(req);
@@ -201,13 +203,15 @@ async function route(req, res) {
     if (!profileName) return json(res, 400, { error: 'Set this computer user’s name in the Task Tracker profile before pairing it.' });
     if (!profileName.includes(memberName) && !memberName.includes(profileName)) return json(res, 409, { error: `This computer profile is “${String(input.profileName).slice(0, 80)}”, but @${member.telegramUsername} is listed as “${member.name}”. Pair from ${member.name}’s computer, or update that computer’s profile name first.` });
     const code = `dv_${crypto.randomBytes(12).toString('hex')}`; const deviceId = String(input.deviceId || crypto.randomUUID());
-    db.pairs = db.pairs.filter(pair => pair.expiresAt > Date.now()); db.pairs.push({ code, memberId: member.id, deviceId, expiresAt: Date.now() + 10 * 60_000, paired: false, agentToken: '' }); saveDb();
+    db.pairs = db.pairs.filter(pair => pair.expiresAt > Date.now() && pair.memberId !== member.id); db.pairs.push({ code, memberId: member.id, deviceId, expiresAt: Date.now() + 10 * 60_000, paired: false, agentToken: '' }); saveDb();
     return json(res, 200, { code, botName: db.botName, inviteLink: `https://t.me/${db.botName}?start=${code}` });
   }
   const pairStatus = url.pathname.match(/^\/agent\/pair\/(dv_[a-f0-9]+)$/);
   if (req.method === 'GET' && pairStatus) {
     const pair = db.pairs.find(item => item.code === pairStatus[1] && item.expiresAt > Date.now()); if (!pair) return json(res, 404, { error: 'Pairing link expired. Generate a new one.' });
     if (!pair.paired || !pair.agentToken) return json(res, 200, { pending: true });
+    const member = db.members.find(item => item.id === pair.memberId);
+    if (!member || !member.deviceTokenHash || !secureEqual(tokenHash(pair.agentToken), member.deviceTokenHash) || member.deviceId !== pair.deviceId) return json(res, 409, { error: 'This pairing link was superseded by a newer computer link. Generate a fresh link on the computer you want to pair.' });
     // Keep the short-lived pairing token available until the code expires so a
     // desktop retry can recover if it missed the first HTTP response.
     return json(res, 200, { pending: false, agentToken: pair.agentToken });
