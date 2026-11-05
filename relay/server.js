@@ -125,18 +125,22 @@ async function handleTelegramMessage(msg) {
     db.groupChatId = chatId; saveDb();
     await tg('sendMessage', { chat_id: chatId, text: '✅ Task Tracker status announcements are enabled in this group. Start tracking to post ON; pause to post Off.' }); return;
   }
-  if (!member || member.chatId !== chatId) {
+  const isRegisteredGroup = !!member && ['group', 'supergroup'].includes(msg.chat.type) && db.groupChatId === chatId;
+  if (member && ['group', 'supergroup'].includes(msg.chat.type) && !isRegisteredGroup && ['/on', 'on', '/online', 'online', '/off', 'off', '/offline', 'offline', '/break', 'break'].includes(command)) {
+    await tg('sendMessage', { chat_id: chatId, text: `Register this group first with /setgroup@${db.botName}.` }); return;
+  }
+  if (!member || (member.chatId !== chatId && !isRegisteredGroup)) {
     if (command === '/start' || command === 'start') await tg('sendMessage', { chat_id: chatId, text: 'Ask your workspace owner for an invite link first.' });
     return;
   }
   if (command === '/on' || command === 'on' || command === '/online' || command === 'online') {
     member.status = 'online'; member.statusSince = Date.now(); member.lastSeen = Date.now(); member.commands.push({ id: crypto.randomUUID(), action: 'start', createdAt: Date.now() }); saveDb();
     const computerOnline = !!member.deviceTokenHash && !!member.lastHeartbeat && Date.now() - member.lastHeartbeat < 25_000;
-    await tg('sendMessage', { chat_id: chatId, text: computerOnline ? 'Online command sent to your connected computer. Its timer and screenshot capture will start.' : 'You are marked online, but your computer is not connected right now. Open Task Tracker on the computer you want to control, pair it from Telegram connection, and keep the app running. The command will run when it reconnects.' });
+    if (!computerOnline || !isRegisteredGroup) await tg('sendMessage', { chat_id: chatId, text: computerOnline ? 'Online command sent to your connected computer. Its timer and screenshot capture will start.' : 'You are marked online, but your computer is not connected right now. Open Task Tracker on the computer you want to control, pair it from Telegram connection, and keep the app running. The command will run when it reconnects.' });
   } else if (command === '/off' || command === 'off' || command === '/offline' || command === 'offline' || command === '/break' || command === 'break') {
     member.status = 'offline'; member.statusSince = null; member.lastSeen = Date.now(); member.commands.push({ id: crypto.randomUUID(), action: 'stop', createdAt: Date.now() }); saveDb();
     const computerOnline = !!member.deviceTokenHash && !!member.lastHeartbeat && Date.now() - member.lastHeartbeat < 25_000;
-    await tg('sendMessage', { chat_id: chatId, text: computerOnline ? 'Off command sent to your connected computer. Its timer and screenshot capture will stop.' : 'You are marked offline, but your computer is not connected right now. Open Task Tracker on the paired computer to receive the stop command when it reconnects.' });
+    if (!computerOnline || !isRegisteredGroup) await tg('sendMessage', { chat_id: chatId, text: computerOnline ? 'Off command sent to your connected computer. Its timer and screenshot capture will stop.' : 'You are marked offline, but your computer is not connected right now. Open Task Tracker on the paired computer to receive the stop command when it reconnects.' });
   } else if ((command === '/task' || command === 'task') && parts.length > 1) {
     const title = text.replace(/^\/?task\s*/i, '').slice(0, 180); member.commands.push({ id: crypto.randomUUID(), action: 'task', title, createdAt: Date.now() }); saveDb();
     await tg('sendMessage', { chat_id: chatId, text: `Task saved: ${title}` });
