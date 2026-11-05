@@ -66,6 +66,14 @@ function snapshot() {
 }
 function publish() { if (win && !win.isDestroyed()) win.webContents.send('state:update', snapshot()); }
 function relayUrl() { return String(state.relay?.url || '').trim().replace(/\/$/, ''); }
+function normalizeRelayUrl(value) {
+  let url = String(value || '').trim().replace(/\/$/, '');
+  if (url && !/^[a-z][a-z\d+.-]*:\/\//i.test(url)) url = `https://${url}`;
+  let parsed;
+  try { parsed = new URL(url); } catch { throw new Error('Enter your relay URL, for example https://your-service.onrender.com.'); }
+  if (parsed.protocol !== 'https:' || !parsed.hostname) throw new Error('The relay address must use HTTPS, for example https://your-service.onrender.com.');
+  return url;
+}
 async function fetchWithTimeout(url, options = {}, timeoutMs = 15_000, serviceName = 'Remote service') {
   const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try { return await fetch(url, { ...options, signal: controller.signal }); }
@@ -483,14 +491,13 @@ ipcMain.handle('relay:verify-admin', async (_e, input) => {
   }
 });
 ipcMain.handle('relay:save-agent-settings', (_e, input) => {
-  const url = String(input.url || '').trim().replace(/\/$/, ''); const username = String(input.username || '').trim().replace(/^@/, '');
-  if (!/^https:\/\//i.test(url)) throw new Error('The relay address must start with https://.');
+  const url = normalizeRelayUrl(input?.url || state.relay.url); const username = String(input?.username || '').trim().replace(/^@/, '');
   if (!/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(username)) throw new Error('Enter a valid Telegram username.');
   state.relay.url = url; state.relay.username = username; persist(); return true;
 });
 ipcMain.handle('relay:copy-text', (_e, value) => { clipboard.writeText(String(value || '')); return true; });
 ipcMain.handle('relay:pair-device', async (_e, input) => {
-  if (input?.url || input?.username) { const url = String(input.url || state.relay.url).trim().replace(/\/$/, ''); const username = String(input.username || state.relay.username).trim().replace(/^@/, ''); if (!/^https:\/\//i.test(url)) throw new Error('The relay address must start with https://.'); state.relay.url = url; state.relay.username = username; }
+  if (input?.url || input?.username) { const url = normalizeRelayUrl(input.url || state.relay.url); const username = String(input.username || state.relay.username).trim().replace(/^@/, ''); state.relay.url = url; state.relay.username = username; }
   if (!/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(state.relay.username)) throw new Error('Enter a valid Telegram username.');
   const result = await relayRequest('/agent/pair', { method: 'POST', body: JSON.stringify({ username: state.relay.username, deviceId: state.relay.deviceId, profileName: state.profile.name }) });
   state.relay.agentToken = ''; state.relay.pendingCode = result.code; state.relay.connectionError = ''; state.telegram.connected = false; state.telegram.botName = result.botName; persist(); publish();
