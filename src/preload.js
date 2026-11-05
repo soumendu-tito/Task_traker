@@ -32,4 +32,5 @@ contextBridge.exposeInMainWorld('tracker', {
   askAssistant: (question) => ipcRenderer.invoke('assistant:ask', question),
   onUpdate: (callback) => { ipcRenderer.on('state:update', (_event, state) => callback(state)); },
   onCapture: (callback) => { ipcRenderer.on('capture:notice', (_event, notice) => callback(notice)); },
+  onTelegramNotice: (callback) => { ipcRenderer.on('telegram:notice', (_event, notice) => callback(notice)); },
 });

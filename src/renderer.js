@@ -320,4 +320,5 @@ $('#footer-date').textContent = new Date().toLocaleDateString(undefined, { weekd
 window.tracker.onUpdate(render);
 setInterval(() => { if ($('#view-workspace')?.classList.contains('active') && appState?.relay?.adminReady) renderWorkspace(); }, 5000);
 window.tracker.onCapture(notice => { if (notice.phase === 'started') toast('Screenshot capture is starting now.'); else { if ($('#view-screenshots').classList.contains('active')) renderScreenshots(); toast('A screenshot was saved to your private work journal.'); } });
+window.tracker.onTelegramNotice(notice => { if (notice?.message) toast(notice.message); });
 window.tracker.getState().then(state => { render(state); if (!state.profile.name) openModal('register-modal'); }).catch(err => toast(err.message));

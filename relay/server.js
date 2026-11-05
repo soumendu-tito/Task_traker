@@ -224,11 +224,12 @@ async function route(req, res) {
       member.totalSeconds = Math.max(0, Math.floor(input.totalSeconds));
     }
     saveDb();
+    let announcementError = '';
     if (input.announce === true && db.groupChatId && typeof input.online === 'boolean') {
       try { await tg('sendMessage', { chat_id: db.groupChatId, text: `${String(input.displayName || member.name || 'Workspace member').slice(0, 100)}: ${input.online ? 'ON' : 'Off'}` }); }
-      catch (error) { console.warn('Could not announce tracker status to Telegram group:', error.message); }
+      catch (error) { announcementError = error.message; console.warn('Could not announce tracker status to Telegram group:', error.message); }
     }
-    return json(res, 200, { ok: true });
+    return json(res, 200, { ok: true, announcementReady: true, groupConfigured: !!db.groupChatId, announcementError });
   }
   return json(res, 404, { error: 'Not found.' });
 }

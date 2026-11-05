@@ -86,7 +86,17 @@ async function relayRequest(route, options = {}, needsAdmin = false) {
 async function reportAgentStatus(announce = false) {
   if (!state?.relay?.agentToken || !relayUrl()) return;
   const now = new Date(); const dayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  try { await relayRequest('/agent/status', { method: 'POST', body: JSON.stringify({ online: state.tracking.active, totalSeconds: snapshot().tracking.activeSeconds, dayKey, announce, displayName: state.profile.name || state.relay.username || 'A workspace member' }) }); }
+  try {
+    const result = await relayRequest('/agent/status', { method: 'POST', body: JSON.stringify({ online: state.tracking.active, totalSeconds: snapshot().tracking.activeSeconds, dayKey, announce, displayName: state.profile.name || state.relay.username || 'A workspace member' }) });
+    if (announce) {
+      let message = '';
+      if (!result.announcementReady) message = 'Update and redeploy the Render relay before Telegram group announcements can work.';
+      else if (!result.groupConfigured) message = 'Add the bot to your Telegram group, then send /setgroup@' + (state.telegram.botName || 'YourBot') + ' there from a linked account.';
+      else if (result.announcementError) message = `Telegram group announcement failed: ${result.announcementError}`;
+      else message = `Telegram group status posted: ${state.tracking.active ? 'ON' : 'Off'}.`;
+      if (message && win && !win.isDestroyed()) win.webContents.send('telegram:notice', { message });
+    }
+  }
   catch (err) { console.warn('Relay status update:', err.message); invalidateAgentPairing(err); }
 }
 function invalidateAgentPairing(error) {
@@ -127,9 +137,13 @@ function createWindow() {
 }
 function stopCapture() { if (captureTimer) clearInterval(captureTimer); captureTimer = null; }
 function announceLocalTelegramStatus(online) {
-  if (state.relay.agentToken || !state.telegram.groupChatId || !state.telegram.token) return;
+  if (state.relay.agentToken) return;
+  if (!state.telegram.groupChatId || !state.telegram.token) {
+    if (state.telegram.connected && win && !win.isDestroyed()) win.webContents.send('telegram:notice', { message: `Add the bot to your Telegram group, then send /setgroup@${state.telegram.botName || 'YourBot'} there from a linked account.` });
+    return;
+  }
   telegram('sendMessage', { chat_id: state.telegram.groupChatId, text: `${state.profile.name || 'Workspace member'}: ${online ? 'ON' : 'Off'}` })
-    .catch(error => console.warn('Could not announce tracker status to Telegram group:', error.message));
+    .catch(error => { console.warn('Could not announce tracker status to Telegram group:', error.message); if (win && !win.isDestroyed()) win.webContents.send('telegram:notice', { message: `Telegram group announcement failed: ${error.message}` }); });
 }
 function startCapture() {
   stopCapture();
