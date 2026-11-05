@@ -59,6 +59,7 @@ function loadDb() {
   db.processedUpdates = Array.isArray(db.processedUpdates) ? db.processedUpdates : [];
 }
 function normalizeUsername(value) { return String(value || '').trim().replace(/^@/, '').toLowerCase(); }
+function normalizePersonName(value) { return String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
 function tokenHash(value) { return crypto.createHash('sha256').update(String(value)).digest('hex'); }
 function secureEqual(a, b) { const x = Buffer.from(String(a)); const y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); }
 function json(res, status, body) { const data = JSON.stringify(body); res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(data), 'cache-control': 'no-store', 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization,content-type,x-relay-admin', 'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS' }); res.end(data); }
@@ -85,6 +86,7 @@ function publicMember(member) {
   return { ...safe, status: deviceOnline ? member.status : 'offline', invitePending: !!inviteCode, deviceOnline, paired: !!deviceTokenHash };
 }
 function memberByTelegram(from) { return db.members.find(member => member.telegramId && String(member.telegramId) === String(from?.id)); }
+function membersByTelegramId(telegramId) { return db.members.filter(member => member.telegramId && String(member.telegramId) === String(telegramId)); }
 async function handleTelegramMessage(msg) {
   if (!msg?.text || !msg.chat?.id) return;
   const text = msg.text.trim(); const parts = text.split(/\s+/); const chatId = String(msg.chat.id);
@@ -94,6 +96,8 @@ async function handleTelegramMessage(msg) {
   if (command === '/start' && arg.startsWith('dm_')) {
     const member = db.members.find(item => item.inviteCode === arg);
     if (!member) { await tg('sendMessage', { chat_id: chatId, text: 'This workspace invite is no longer valid. Ask the workspace owner for a new one.' }); return; }
+    const existingLink = membersByTelegramId(msg.from?.id).find(item => item.id !== member.id);
+    if (existingLink) { await tg('sendMessage', { chat_id: chatId, text: `This Telegram account is already linked to ${existingLink.name} (@${existingLink.telegramUsername}). Ask the workspace owner to update that existing member instead of creating a duplicate.` }); return; }
     if (normalizeUsername(msg.from?.username) !== normalizeUsername(member.telegramUsername)) {
       await tg('sendMessage', { chat_id: chatId, text: `This invite is for @${member.telegramUsername}. Switch to that Telegram account or ask for a new invite.` }); return;
     }
@@ -105,13 +109,16 @@ async function handleTelegramMessage(msg) {
     const pair = db.pairs.find(item => item.code === arg && item.expiresAt > Date.now());
     const member = pair && db.members.find(item => item.id === pair.memberId);
     const telegramId = String(msg.from?.id || ''); const usernameMatches = normalizeUsername(msg.from?.username) === normalizeUsername(member?.telegramUsername);
-    if (!pair || !member || (member.telegramId ? String(member.telegramId) !== telegramId : !usernameMatches)) { await tg('sendMessage', { chat_id: chatId, text: 'That computer link is expired, belongs to another Telegram account, or your username has not been added to this workspace. Ask the workspace owner to confirm your username and generate a fresh link.' }); return; }
+    const duplicateAccount = membersByTelegramId(telegramId).find(item => item.id !== member?.id);
+    if (!pair || !member || duplicateAccount || (member.telegramId ? String(member.telegramId) !== telegramId : !usernameMatches)) { await tg('sendMessage', { chat_id: chatId, text: duplicateAccount ? `This Telegram account is linked to multiple workspace people. Ask the owner to remove the duplicate member before pairing.` : 'That computer link is expired, belongs to another Telegram account, or your username has not been added to this workspace. Ask the workspace owner to confirm your username and generate a fresh link.' }); return; }
     if (!member.telegramId) { member.telegramId = telegramId; member.chatId = chatId; member.inviteCode = ''; member.status = 'offline'; member.lastSeen = Date.now(); }
     const agentToken = crypto.randomBytes(32).toString('base64url'); member.deviceTokenHash = tokenHash(agentToken); member.deviceId = pair.deviceId; member.lastHeartbeat = Date.now(); pair.agentToken = agentToken; pair.paired = true; saveDb();
-    await tg('sendMessage', { chat_id: chatId, text: 'Telegram authorization accepted. Keep Task Tracker open on the computer that generated this link; it will finish pairing and then show as connected. After that, use /on to start tracking or /off to stop.' }); return;
+    await tg('sendMessage', { chat_id: chatId, text: `Telegram authorization accepted for ${member.name} (@${member.telegramUsername}). Keep Task Tracker open on ${member.name}’s computer; it will finish pairing and then show as connected. After that, use /on to start tracking or /off to stop.` }); return;
   }
 
-  const member = memberByTelegram(msg.from);
+  const matchingMembers = membersByTelegramId(msg.from?.id);
+  if (matchingMembers.length > 1) { await tg('sendMessage', { chat_id: chatId, text: 'This Telegram account is linked to multiple workspace people. Ask the owner to remove the duplicate member before using tracker commands.' }); return; }
+  const member = matchingMembers[0] || null;
   if (command === '/setgroup' && member && ['group', 'supergroup'].includes(msg.chat.type)) {
     db.groupChatId = chatId; saveDb();
     await tg('sendMessage', { chat_id: chatId, text: '✅ Task Tracker status announcements are enabled in this group. Start tracking to post ON; pause to post Off.' }); return;
@@ -164,6 +171,8 @@ async function route(req, res) {
     if (req.method === 'POST' && url.pathname === '/admin/members') {
       const input = await body(req); const username = String(input.telegramUsername || '').trim().replace(/^@/, '');
       if (!input.name || !/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(username) || !input.inviteCode) return json(res, 400, { error: 'Name, a valid Telegram username and invite code are required.' });
+      const duplicateTelegramAccount = input.telegramId && db.members.find(item => String(item.telegramId || '') === String(input.telegramId) && item.id !== input.id);
+      if (duplicateTelegramAccount) return json(res, 409, { error: `This Telegram account is already linked to ${duplicateTelegramAccount.name} (@${duplicateTelegramAccount.telegramUsername}). Update that existing workspace member instead of adding a duplicate.` });
       let member = db.members.find(item => item.id === input.id || normalizeUsername(item.telegramUsername) === normalizeUsername(username));
       if (!member) { member = { id: input.id || crypto.randomUUID(), commands: [], status: 'offline', totalSeconds: 0 }; db.members.push(member); }
       Object.assign(member, { name: String(input.name).slice(0, 100), telegramUsername: username });
@@ -188,6 +197,9 @@ async function route(req, res) {
   if (req.method === 'POST' && url.pathname === '/agent/pair') {
     const input = await body(req); const username = normalizeUsername(input.username); const member = db.members.find(item => normalizeUsername(item.telegramUsername) === username);
     if (!member) return json(res, 403, { error: 'This Telegram username has not been added to the workspace. Ask the workspace owner to add or sync it, then try again.' });
+    const profileName = normalizePersonName(input.profileName); const memberName = normalizePersonName(member.name);
+    if (!profileName) return json(res, 400, { error: 'Set this computer user’s name in the Task Tracker profile before pairing it.' });
+    if (!profileName.includes(memberName) && !memberName.includes(profileName)) return json(res, 409, { error: `This computer profile is “${String(input.profileName).slice(0, 80)}”, but @${member.telegramUsername} is listed as “${member.name}”. Pair from ${member.name}’s computer, or update that computer’s profile name first.` });
     const code = `dv_${crypto.randomBytes(12).toString('hex')}`; const deviceId = String(input.deviceId || crypto.randomUUID());
     db.pairs = db.pairs.filter(pair => pair.expiresAt > Date.now()); db.pairs.push({ code, memberId: member.id, deviceId, expiresAt: Date.now() + 10 * 60_000, paired: false, agentToken: '' }); saveDb();
     return json(res, 200, { code, botName: db.botName, inviteLink: `https://t.me/${db.botName}?start=${code}` });
@@ -207,7 +219,7 @@ async function route(req, res) {
       if (member.totalDayKey !== String(input.dayKey)) { member.totalDayKey = String(input.dayKey); member.totalSeconds = 0; }
       member.totalSeconds = Math.max(0, Math.floor(input.totalSeconds));
     }
-    const commands = member.commands.slice(0, 50); saveDb(); return json(res, 200, { commands, status: member.status });
+    const commands = member.commands.slice(0, 50); saveDb(); return json(res, 200, { commands, status: member.status, memberId: member.id, telegramUsername: member.telegramUsername, deviceId: member.deviceId || '' });
   }
   if (req.method === 'POST' && url.pathname === '/agent/ack') {
     const member = agentFor(req); if (!member) return json(res, 401, { error: 'This computer is not paired.' });

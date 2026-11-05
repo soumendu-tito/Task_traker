@@ -100,9 +100,10 @@ async function reportAgentStatus(announce = false) {
   catch (err) { console.warn('Relay status update:', err.message); invalidateAgentPairing(err); }
 }
 function invalidateAgentPairing(error) {
-  if (!/not paired|pairing is no longer active/i.test(String(error?.message || ''))) return false;
+  if (!/not paired|pairing is no longer active|pairing identity mismatch/i.test(String(error?.message || ''))) return false;
   state.relay.agentToken = ''; state.telegram.connected = false;
   state.relay.connectionError = 'This computer’s saved pairing was rejected by the relay. Generate a fresh computer link and confirm it in Telegram.';
+  if (/pairing identity mismatch/i.test(String(error?.message || ''))) state.relay.connectionError = error.message;
   persist(); publish();
   if (telegramTimer) { clearInterval(telegramTimer); telegramTimer = null; }
   return true;
@@ -113,6 +114,11 @@ async function pollAgentRelay() {
   try {
     const now = new Date(); const dayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const result = await relayRequest('/agent/poll', { method: 'POST', body: JSON.stringify({ totalSeconds: snapshot().tracking.activeSeconds, dayKey }) });
+    const expectedUser = normalizeTelegramUsername(state.relay.username);
+    const pairedUser = normalizeTelegramUsername(result.telegramUsername);
+    if ((pairedUser && pairedUser !== expectedUser) || (result.deviceId && result.deviceId !== state.relay.deviceId)) {
+      throw new Error(`Pairing identity mismatch: this app is set to @${state.relay.username}, but the relay token belongs to @${result.telegramUsername || 'unknown'} on another computer. Generate a fresh computer link on this computer.`);
+    }
     const completed = [];
     for (const command of result.commands || []) {
       try {
@@ -486,7 +492,7 @@ ipcMain.handle('relay:copy-text', (_e, value) => { clipboard.writeText(String(va
 ipcMain.handle('relay:pair-device', async (_e, input) => {
   if (input?.url || input?.username) { const url = String(input.url || state.relay.url).trim().replace(/\/$/, ''); const username = String(input.username || state.relay.username).trim().replace(/^@/, ''); if (!/^https:\/\//i.test(url)) throw new Error('The relay address must start with https://.'); state.relay.url = url; state.relay.username = username; }
   if (!/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(state.relay.username)) throw new Error('Enter a valid Telegram username.');
-  const result = await relayRequest('/agent/pair', { method: 'POST', body: JSON.stringify({ username: state.relay.username, deviceId: state.relay.deviceId }) });
+  const result = await relayRequest('/agent/pair', { method: 'POST', body: JSON.stringify({ username: state.relay.username, deviceId: state.relay.deviceId, profileName: state.profile.name }) });
   state.relay.agentToken = ''; state.relay.pendingCode = result.code; state.relay.connectionError = ''; state.telegram.connected = false; state.telegram.botName = result.botName; persist(); publish();
   if (relayPairTimer) clearInterval(relayPairTimer); relayPairTimer = setInterval(checkRelayPair, 2500); checkRelayPair();
   return result;
